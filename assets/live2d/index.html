@@ -491,7 +491,34 @@ html, body {
       } else {
         idleMotion = motionList[0];
       }
-      const actMotions = motionList.filter(m => m !== idleMotion);
+      let actMotions = motionList.filter(m => m !== idleMotion);
+
+      // ===== 动作/表情按情绪自适应 =====
+      // 把模型自带的动作(组名+文件名)与表情(名)按关键词归类到 5 种情绪维度
+      // (joy/anger/sadness/calm/anxiety)。说话时若带了情绪，优先播对应情绪池的
+      // 动作/表情，让 Live2D 表现与心情一致（如 Xiyu 的「生气」表情、各类「开心」动作）。
+      // 未归类的动作仍留在 actMotions 作为通用插播池，保证任何模型都不退化。
+      const EMOS = ["joy", "anger", "sadness", "calm", "anxiety"];
+      const EMO_KW = {
+        joy:      ["开心","高兴","笑","乐","喜","星星","心心","爱","happy","joy","cheer","smile","love"],
+        anger:    ["生气","怒","愤","哈气","angry","mad","rage"],
+        sadness:  ["伤心","哭","泪","悲","难过","流泪","sad","cry","tear"],
+        calm:     ["平静","待机","idle","calm","normal","stand","睡","relax","neutral"],
+        anxiety:  ["紧张","慌","害羞","脸红","怕","羞","抖","anxious","shy","nervous","blush"],
+      };
+      const _classify = (name) => {
+        const n = (name || "").toLowerCase();
+        for (const e of EMOS) {
+          if (EMO_KW[e].some(k => n.includes(k.toLowerCase()))) return e;
+        }
+        return null;
+      };
+      const emoMotionPool = { joy: [], anger: [], sadness: [], calm: [], anxiety: [] };
+      const emoExprPool = { joy: [], anger: [], sadness: [], calm: [], anxiety: [] };
+      actMotions.forEach(m => { const e = _classify(m.group + " " + m.file); if (e) emoMotionPool[e].push(m); });
+      selectableExpr.forEach(name => { const e = _classify(name); if (e) emoExprPool[e].push(name); });
+      // 已归类的动作移出通用池（专属情绪池），未归类的保留为通用插播池
+      actMotions = actMotions.filter(m => !_classify(m.group + " " + m.file));
 
       // 待机循环：播待机动作。
       // 关键修复（抽动根源）：idle 重播一律用 IDLE 优先级(1)，而非 FORCE(3)。
@@ -698,6 +725,10 @@ html, body {
         } catch (e) {}
       });
 
+      // 嘴型参数：默认 ParamMouthOpenY（Cubism 标准）。可由 URL ?mouth= 覆盖，
+      // 以便适配嘴型参数名不同的模型（如老模型用 ParamMouthOpen）。
+      const MOUTH_PARAM = (new URLSearchParams(location.search).get("mouth")) || "ParamMouthOpenY";
+
       // 说话口型：
       //  - 普通 playMotion 触发的说话（无实时音频驱动）用多正弦叠加的伪节奏，约 2.6s 自动归零；
       //  - 由 Python 端实时口型驱动时（liveMouth=true），嘴张合完全跟随音频能量
@@ -713,9 +744,9 @@ html, body {
             talkT += app.ticker.deltaMS / 1000;
             // 多正弦叠加，模拟说话节奏（0~0.9 之间张合）
             const v = (Math.sin(talkT * 14) * 0.5 + 0.5) * 0.6 + (Math.sin(talkT * 23) * 0.5 + 0.5) * 0.3;
-            core.setParameterValueById("ParamMouthOpenY", Math.min(0.9, v));
+            core.setParameterValueById(MOUTH_PARAM, Math.min(0.9, v));
           } else {
-            core.setParameterValueById("ParamMouthOpenY", 0);
+            core.setParameterValueById(MOUTH_PARAM, 0);
           }
         } catch (e) {}
       });
@@ -732,15 +763,20 @@ html, body {
         // 1) 口型：说话时嘴巴张合约 2.6s
         talkUntil = performance.now() + 2600;
         talkT = 0;
-        // 2) 反馈表情：每次说话都换一个（更生动）
-        if (selectableExpr.length) {
-          try { model.expression(selectableExpr[Math.floor(Math.random() * selectableExpr.length)]); } catch (e) {}
+        // 解析情绪（来自 Python 端性格情感权重系统；旧格式 args 为字符串/数组则忽略）
+        let emo = null;
+        if (args && typeof args === "object" && args.emotion) emo = args.emotion;
+        // 2) 反馈表情：优先对应情绪池，否则从全部可选表情随机（更生动）
+        const exprPool = (emo && emoExprPool[emo] && emoExprPool[emo].length) ? emoExprPool[emo] : selectableExpr;
+        if (exprPool.length) {
+          try { model.expression(exprPool[Math.floor(Math.random() * exprPool.length)]); } catch (e) {}
         }
-        // 3) 肢体动作：仅在空闲且存在插播池时做一次
-        if (!actingBusy && actMotions.length && Math.random() < 0.6) {
+        // 3) 肢体动作：优先对应情绪池，否则通用插播池；仅在空闲时做一次
+        const motionPool = (emo && emoMotionPool[emo] && emoMotionPool[emo].length) ? emoMotionPool[emo] : actMotions;
+        if (!actingBusy && motionPool.length && Math.random() < 0.6) {
           actingBusy = true;
           clearIdleTimer();   // 取消待机兜底定时器，避免它在插播途中重启 idle 而打断动作（抽动根源）
-          const pick = actMotions[Math.floor(Math.random() * actMotions.length)];
+          const pick = motionPool[Math.floor(Math.random() * motionPool.length)];
           try {
             const m = model.motion(pick.group, pick.index, 3); // FORCE：停旧待机后 t=0 fade-in 播插播动作
             let doneFired = false;
@@ -782,7 +818,7 @@ html, body {
         liveMouth = false;
         try {
           const core = model.internalModel.coreModel;
-          if (core) core.setParameterValueById("ParamMouthOpenY", 0);
+          if (core) core.setParameterValueById(MOUTH_PARAM, 0);
         } catch (e) {}
         if (talkBubble) {
           const b = talkBubble; talkBubble = null;
@@ -804,7 +840,7 @@ html, body {
         mouthLast = m;
         try {
           const core = model.internalModel.coreModel;
-          if (core) core.setParameterValueById("ParamMouthOpenY", m);
+          if (core) core.setParameterValueById(MOUTH_PARAM, m);
         } catch (e) {}
       };
     } catch (e) {

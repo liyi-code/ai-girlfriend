@@ -365,6 +365,18 @@ class EmotionEngine:
             "loudness_rate": int(max(-50, min(100, round(lr)))),
         }
 
+    def dominant(self):
+        """返回当前主导情绪维度名（joy/anger/sadness/calm/anxiety）。
+
+        用于驱动 Live2D 动作/表情自适应：让小念说话时的肢体动作与表情
+        对应她此刻的心情（开心/生气/伤心…），而不仅是随机。
+        """
+        if not self.enabled:
+            return "calm"
+        with self._lock:
+            emo = dict(self.emotion)
+        return max(EMOTION_DIMS, key=lambda k: emo[k])
+
     def _blend(self):
         """返回 (主导维度, 次要维度或 None)。性格由累计差值分布决定。"""
         accum = self.emotion_accum
