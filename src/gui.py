@@ -1082,7 +1082,14 @@ class App:
         name = CONFIG["name"]
         # on_play：音频开始播放时，气泡+说话动作+进入实时口型模式（与声音起点对齐）
         def on_play():
-            self.live2d_say(text, name, start_talk=True)
+            # 取当前主导情绪，传给前端让动作/表情也随心情变化（动作自适应情绪）
+            dom = None
+            if emo is not None:
+                try:
+                    dom = emo.dominant()
+                except Exception:
+                    dom = None
+            self.live2d_say(text, name, start_talk=True, emotion=dom)
         # on_level：播放期间每帧把当前音频能量传过去，驱动嘴型实时张合（长句也同步）
         def on_level(rms):
             self._send_mouth(rms)
@@ -1317,11 +1324,13 @@ class App:
                     pass
         self.root.destroy()
 
-    def live2d_say(self, text, name=None, start_talk=False):
+    def live2d_say(self, text, name=None, start_talk=False, emotion=None):
         """向形象窗口发送「气泡 + 说话动作」。
 
         start_talk=True 时额外带 talk_start 标记，让前端进入实时口型模式
         （锁定当前气泡为说话气泡、口型改由 setMouth 按音频能量驱动），长句也同步。
+        emotion: 可选，当前主导情绪维度名(joy/anger/sadness/calm/anxiety)，
+        用于让前端按心情选对应动作/表情（动作自适应情绪）。
         """
         if not CONFIG.get("live2d_enabled"):
             return
@@ -1330,8 +1339,10 @@ class App:
             with socket.create_connection(("127.0.0.1", CONFIG["live2d_port"]), timeout=1) as s:
                 # 单条消息同时携带气泡文本与“说话”动作标记；接收端一次 recv 后统一处理，
                 # 避免两条 sendall 在同一连接上被 TCP 粘包导致 json 解析失败（气泡/动作全丢）。
+                # args 传对象：emotion 主导情绪（驱动前端按情绪选动作/表情），kind 标记说话意图。
                 payload = {
-                    "text": text, "name": name, "motion": True, "args": ["speaking"]
+                    "text": text, "name": name, "motion": True,
+                    "args": {"emotion": emotion or "calm", "kind": "speaking"},
                 }
                 if start_talk:
                     payload["talk_start"] = True

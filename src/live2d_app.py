@@ -90,12 +90,40 @@ def model_display(rel):
             break
     return name
 
+def detect_mouth_param(model_rel):
+    """返回嘴型参数名：优先 .env 的 LIVE2D_MOUTH_PARAM；否则从 model3.json 的
+    LipSync 组读取；都拿不到回退 ParamMouthOpenY。让换用嘴型参数名不同的模型时
+    实时口型仍生效（如老模型用 ParamMouthOpen）。"""
+    env_val = (CONFIG.get("live2d_mouth_param") or "").strip()
+    if env_val:
+        return env_val
+    if not model_rel:
+        return "ParamMouthOpenY"
+    try:
+        mpath = model_rel if os.path.isabs(model_rel) else os.path.abspath(os.path.join(ROOT, model_rel))
+        if not os.path.isfile(mpath):
+            return "ParamMouthOpenY"
+        with open(mpath, encoding="utf-8") as f:
+            data = json.load(f)
+        groups = (data.get("FileReferences", {}).get("Groups")
+                   or data.get("Groups") or [])
+        for g in groups:
+            if (g.get("Name") or "").lower() == "lipsync":
+                ids = g.get("Ids") or []
+                if ids:
+                    return ids[0]
+    except Exception:
+        pass
+    return "ParamMouthOpenY"
+
+
 def build_page_url(model_rel):
     mhttp = "http://127.0.0.1:%d/%s" % (HTTP_PORT, model_rel) if model_rel else ""
+    mouth = detect_mouth_param(model_rel)
     # 末尾加时间戳作为缓存破坏：WebView2 有时会缓存顶层文档(index.html)，
     # 导致对 index.html 的修改不生效（水印/⚙ 失灵）。带不同 query 即强制重新拉取。
-    return "http://127.0.0.1:%d/assets/live2d/index.html?model=%s&_=%d" % (
-        HTTP_PORT, urllib.parse.quote(mhttp), int(time.time() * 1000))
+    return "http://127.0.0.1:%d/assets/live2d/index.html?model=%s&mouth=%s&_=%d" % (
+        HTTP_PORT, urllib.parse.quote(mhttp), urllib.parse.quote(mouth), int(time.time() * 1000))
 
 def switch_model(model_rel, toast=True):
     if window is None or not model_rel:

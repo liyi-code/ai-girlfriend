@@ -38,6 +38,9 @@ CONFIG = {
     # —— 小念的 Live2D 桌面形象 ——
     "live2d_enabled": _bool(os.getenv("LIVE2D_ENABLED", "false")),
     "live2d_model": _resolve_path(os.getenv("LIVE2D_MODEL", "")),
+    # 嘴型参数名：留空则自动从模型 model3.json 的 LipSync 组探测，回退 ParamMouthOpenY。
+    # 若你的模型嘴型参数不叫 ParamMouthOpenY（如老模型用 ParamMouthOpen），在此写死覆盖。
+    "live2d_mouth_param": os.getenv("LIVE2D_MOUTH_PARAM", "").strip(),
     "live2d_port": int(os.getenv("LIVE2D_PORT", "9742")),
     "gui_control_port": int(os.getenv("GUI_CONTROL_PORT", "9744")),  # live2d 窗口反向通知 gui（输入框显隐等）
 
