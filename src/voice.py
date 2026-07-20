@@ -18,6 +18,8 @@ import threading
 import tempfile
 import numpy as np
 
+from config import CONFIG
+
 
 def _sanitize_tts_text(text):
     """清洗要合成成语音的文本。
@@ -359,6 +361,8 @@ class TTS:
         self.seedtts_access_key = (seedtts_access_key or "").strip()
         self.seedtts_voice = seedtts_voice or "qingleng_yujie"   # 角色键，见 seedtts_presets.py
         self.seedtts_speed = float(seedtts_speed)
+        # 是否把「性格情感权重」映射到语音声调（开心/生气/伤心… 影响语气、语速、音量）
+        self.emotion_enabled = bool(CONFIG.get("seedtts_emotion_enabled", True))
         # —— 通用 ——
         self.volume = float(volume)
         self.output_device = output_device  # 扬声器设备：""=系统默认；或索引/名子串
@@ -368,7 +372,7 @@ class TTS:
             return False
         return bool(self.seedtts_app_id) and bool(self.seedtts_access_key) and bool(self.seedtts_voice)
 
-    def speak(self, text, on_play=None, on_level=None):
+    def speak(self, text, on_play=None, on_level=None, tone=None):
         """合成并播放。出错时返回错误信息字符串（调用方决定是否展示）。
 
         on_play: 可选回调，在音频「开始播放」前被调用（仅 200 成功时）。
@@ -376,13 +380,16 @@ class TTS:
         (~数秒) 期间动作已播完、声音才姗姗来迟的“不同步”现象。
         on_level: 可选回调，播放期间按播放进度周期性回调 on_level(rms)，
         用于实时口型驱动(LipSync)，让嘴型随音频能量张合，长句也同步。
+        tone: 可选 dict（来自 emotion.voice_tone），把性格情感权重映射成
+        语音声调（emotion/emotion_scale/speech_rate/loudness_rate），
+        让小念的语气随心情变化。为 None 时走中性默认。
         """
         if not self.enabled:
             return None
         text = (text or "").strip()
         if not text:
             return None
-        return self._speak_seedtts(text, on_play, on_level)
+        return self._speak_seedtts(text, on_play, on_level, tone)
 
     # --------------------------------------------------------------------------- #
     # 语音输出（字节 Seed-TTS / 火山引擎「豆包语音合成大模型」v3，官方 AI 音色）
@@ -405,7 +412,7 @@ class TTS:
             except Exception:
                 return key
 
-    def _speak_seedtts(self, text, on_play, on_level):
+    def _speak_seedtts(self, text, on_play, on_level, tone=None):
         """字节 Seed-TTS 后端：把文字发给火山引擎 v3 接口，拿回 MP3 解码成 WAV 播放。
 
         用官方 AI 合成音色（非克隆），天然避开侵权；云端推理、无需 GPU/本地模型。
@@ -424,12 +431,26 @@ class TTS:
         voice_id = self._resolve_seedtts_voice_id()
         # 官方 2.0 音色（uranus 系列）走 seed-tts-2.0 资源；非克隆，无需 model_type
         resource_id = "seed-tts-2.0"
+        # 基础语速：来自 .env 的 SEEDTTS_SPEED（1.0=正常，换算成 speech_rate 整数）
+        base_rate = int(round((self.seedtts_speed - 1.0) * 100))
+        audio_params = {"format": "mp3", "sample_rate": 24000}
+        if tone and self.emotion_enabled:
+            # 把性格情感权重映射到语音声调：情绪类别 + 强度 + 语速/音量偏移
+            audio_params["emotion"] = tone.get("emotion", "neutral")
+            audio_params["emotion_scale"] = int(tone.get("emotion_scale", 4))
+            # 最终语速 = 基础(SEEDTTS_SPEED) + 情绪偏移，钳制到 [-50, 100]
+            sr = base_rate + int(tone.get("speech_rate", 0))
+            audio_params["speech_rate"] = int(max(-50, min(100, sr)))
+            audio_params["loudness_rate"] = int(max(-50, min(100, int(tone.get("loudness_rate", 0)))))
+        elif base_rate:
+            # 无情绪（或已关闭）时，仍应用 .env 里设的基础语速
+            audio_params["speech_rate"] = int(max(-50, min(100, base_rate)))
         body = {
             "user": {"uid": "ai-girlfriend"},
             "req_params": {
                 "text": text,
                 "speaker": voice_id,
-                "audio_params": {"format": "mp3", "sample_rate": 24000},
+                "audio_params": audio_params,
             },
         }
         headers = {

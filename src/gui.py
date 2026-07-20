@@ -1086,9 +1086,18 @@ class App:
         # on_level：播放期间每帧把当前音频能量传过去，驱动嘴型实时张合（长句也同步）
         def on_level(rms):
             self._send_mouth(rms)
+        # 把小念当前的「性格情感权重」映射成语音声调（开心/生气/伤心… 影响语气、语速、音量），
+        # 让她的声音也会随心情起伏；情绪系统未启用时 tone=None，走中性默认。
+        tone = None
+        emo = getattr(self, "emotion", None)
+        if emo is not None:
+            try:
+                tone = emo.voice_tone()
+            except Exception:
+                tone = None
         # 串行锁：保证所有语音输出（用户回复 / 看屏 / 关心）互不重叠、口型对齐
         with self._speak_lock:
-            err = self.tts.speak(text, on_play=on_play, on_level=on_level)
+            err = self.tts.speak(text, on_play=on_play, on_level=on_level, tone=tone)
             # 无论成功或失败，播放结束后都归位（口型归零、淡出气泡），避免卡在“张嘴”状态
             self._stop_talk()
         if err:
@@ -1217,13 +1226,17 @@ class App:
         sp_var = tk.DoubleVar(value=float(CONFIG.get("seedtts_speed", 1.0)))
         self._scale(parent, sp_var, 0.5, 2.0, 0.05, lambda v: None)
 
+        # 情感声调开关：把性格情感权重映射到语音的语气/语速/音量
+        emo_var = tk.BooleanVar(value=bool(CONFIG.get("seedtts_emotion_enabled", True)))
+        self._check(parent, "情感声调（让语音随心情变化）", variable=emo_var)
+
         row = tk.Frame(parent, bg=self.THEME["panel"])
         row.pack(padx=14, pady=(10, 4))
         self._btn(row, "测试连接",
-                  lambda: self._on_seedtts_test(aid_var, akey_var, sp_var, voice_var, keys, names),
+                  lambda: self._on_seedtts_test(aid_var, akey_var, sp_var, voice_var, keys, names, emo_var),
                   width=12).pack(side=tk.LEFT, padx=4)
         self._btn(row, "保存并应用",
-                  lambda: self._on_seedtts_save(aid_var, akey_var, sp_var, voice_var, keys, names),
+                  lambda: self._on_seedtts_save(aid_var, akey_var, sp_var, voice_var, keys, names, emo_var),
                   hot=True, width=12).pack(side=tk.LEFT, padx=4)
 
     def _on_seedtts_voice_change(self, key):
@@ -1233,7 +1246,7 @@ class App:
             "🎙 已切换 Seed-TTS 音色：" +
             self._seedtts_presets()[0].get(key, {}).get("name", key), 3000)
 
-    def _on_seedtts_test(self, aid_var, akey_var, sp_var, voice_var, keys, names):
+    def _on_seedtts_test(self, aid_var, akey_var, sp_var, voice_var, keys, names, emo_var):
         app_id = aid_var.get().strip()
         key = akey_var.get().strip()
         if not app_id or not key:
@@ -1251,6 +1264,7 @@ class App:
                 t = TTS(enabled=True, backend="seedtts",
                         seedtts_app_id=app_id, seedtts_access_key=key,
                         seedtts_voice=vkey, seedtts_speed=sp_var.get())
+                t.emotion_enabled = bool(emo_var.get())
                 err = t.speak("你好，我是小念，正在测试声音。")
                 if err:
                     self.root.after(0, lambda: self.show_voice_status(f"❌ {err[:200]}", 9000))
@@ -1260,7 +1274,7 @@ class App:
                 self.root.after(0, lambda: self.show_voice_status(f"❌ {str(e)[:200]}", 9000))
         threading.Thread(target=_run, daemon=True).start()
 
-    def _on_seedtts_save(self, aid_var, akey_var, sp_var, voice_var, keys, names):
+    def _on_seedtts_save(self, aid_var, akey_var, sp_var, voice_var, keys, names, emo_var):
         app_id = aid_var.get().strip()
         key = akey_var.get().strip()
         if not app_id or not key:
@@ -1270,6 +1284,7 @@ class App:
         self.tts.seedtts_app_id = app_id
         self.tts.seedtts_access_key = key
         self.tts.seedtts_speed = sp_var.get()
+        self.tts.emotion_enabled = bool(emo_var.get())
         vname = voice_var.get()
         vkey = keys[names.index(vname)] if vname in names else keys[0]
         self.tts.seedtts_voice = vkey
@@ -1278,6 +1293,7 @@ class App:
         self._write_env_value("SEEDTTS_APP_ID", app_id)
         self._write_env_value("SEEDTTS_ACCESS_KEY", key)
         self._write_env_value("SEEDTTS_VOICE", vkey)
+        self._write_env_value("SEEDTTS_EMOTION_ENABLED", "true" if emo_var.get() else "false")
         self._write_env_value("SEEDTTS_SPEED", str(sp_var.get()))
         # 若当前引擎不是 seedtts，切过去
         if self.tts.backend != "seedtts":

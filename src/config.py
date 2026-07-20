@@ -54,6 +54,7 @@ CONFIG = {
     "seedtts_access_key": os.getenv("SEEDTTS_ACCESS_KEY", ""),  # 访问控制里的 API 密钥
     "seedtts_voice": os.getenv("SEEDTTS_VOICE", "qingleng_yujie"),  # 角色键，见 seedtts_presets.py
     "seedtts_speed": float(os.getenv("SEEDTTS_SPEED", "1.0")),
+    "seedtts_emotion_enabled": _bool(os.getenv("SEEDTTS_EMOTION_ENABLED", "true")),
     "tts_volume": float(os.getenv("TTS_VOLUME", "0.4")),  # 语音播放音量(0~1)
 
     # 音频设备：输入=麦克风(ASR 用)，输出=扬声器(TTS 播放用)。

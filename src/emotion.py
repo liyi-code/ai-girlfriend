@@ -51,6 +51,21 @@ TRAIT_PROMPT = {
 DEFAULT_EMOTION = {"joy": 0.15, "anger": 0.0, "sadness": 0.0, "calm": 0.5, "anxiety": 0.0}
 DEFAULT_ACCUM = {"joy": 5.0, "anger": 0.0, "sadness": 0.0, "calm": 20.0, "anxiety": 0.0}
 
+# —— 情绪 → 语音声调（TTS）映射 ——
+# 把内部 5 维情绪映射到火山引擎 Seed-TTS v3 的 emotion 类别。
+# anxiety(黏人紧张/慌张) 在官方类别里没有对应项，用 surprised(惊讶/提气) 近似，
+# 它在听感上同样是“音调偏高、节奏偏快”，能传达紧张感。
+VOICE_EMOTION_MAP = {
+    "joy": "happy",
+    "anger": "angry",
+    "sadness": "sad",
+    "anxiety": "surprised",
+    "calm": "neutral",
+}
+# 各情绪对「语速/音量」相对基准的偏移贡献（权重越大、偏移越大；正=更快/更响）
+_SPEECH_RATE_DELTA = {"joy": 18, "anger": 22, "sadness": -16, "calm": -6, "anxiety": 12}
+_LOUDNESS_RATE_DELTA = {"joy": 6, "anger": 14, "sadness": -10, "calm": 0, "anxiety": 8}
+
 # 短期情绪衰减半衰期（秒）；长期累计衰减更慢（10 倍半衰期）
 DECAY_HALF_LIFE = 600
 # 性格切换：累计差值需超过此阈值，且连续稳定 STABLE_REQUIRED 次 analyze 才切换。
@@ -311,6 +326,44 @@ class EmotionEngine:
             f"绝不改变你的原则（尤其是健康底线）。你可以闹小脾气、可以撒娇、可以需要被安慰，"
             f"但绝不能因此迎合他做有害健康的事。"
         )
+
+    def voice_tone(self):
+        """根据当前情绪权重，生成用于 TTS 的「声调」参数，让语音随心情变化。
+
+        返回 dict（情绪系统关闭时返回 None）：
+            emotion:       火山引擎 TTS 情绪类别 happy/sad/angry/surprised/neutral
+            emotion_scale: 1~5，情绪强度（越大表达越明显）
+            speech_rate:   -50~100，相对基准的语速偏移（正=更快）
+            loudness_rate: -50~100，相对基准的音量偏移（正=更响）
+
+        设计：主导情绪决定情绪类别与强度；语速/音量由各情绪权重加权混合得到，
+        这样「开心」会更快更亮、「生气」更冲、「伤心」更慢更轻、「平静」舒缓自然。
+        """
+        if not self.enabled:
+            return None
+        with self._lock:
+            emo = dict(self.emotion)
+            accum = dict(self.emotion_accum)
+        # 主导情绪决定情绪类别
+        dom = max(EMOTION_DIMS, key=lambda k: emo[k])
+        api_emotion = VOICE_EMOTION_MAP[dom]
+        # 情绪强度 → emotion_scale(1~5)
+        intensity = emo[dom]
+        scale = 1.0 + min(1.0, intensity) * 4.0
+        # 性格底色（次要维度长期累计接近主导时）让表达更丰富一点
+        ordered = sorted(EMOTION_DIMS, key=lambda k: accum[k], reverse=True)
+        if len(ordered) > 1 and accum[ordered[1]] / (accum[ordered[0]] or 1.0) >= 0.65:
+            scale += 0.5
+        emotion_scale = int(max(1, min(5, round(scale))))
+        # 语速/音量：按各情绪权重加权混合，再放大得到相对偏移
+        sr = sum(emo[k] * _SPEECH_RATE_DELTA[k] for k in EMOTION_DIMS) * 2.0
+        lr = sum(emo[k] * _LOUDNESS_RATE_DELTA[k] for k in EMOTION_DIMS) * 2.0
+        return {
+            "emotion": api_emotion,
+            "emotion_scale": emotion_scale,
+            "speech_rate": int(max(-50, min(100, round(sr)))),
+            "loudness_rate": int(max(-50, min(100, round(lr)))),
+        }
 
     def _blend(self):
         """返回 (主导维度, 次要维度或 None)。性格由累计差值分布决定。"""
