@@ -111,6 +111,15 @@ CONFIG = {
     # —— 小念替你操作电脑文件（创建/写入文本文件，如计划、笔记；带安全护栏）——
     "file_ops_enabled": _bool(os.getenv("FILE_OPS_ENABLED", "true")),  # true=允许小念在你的电脑上创建/写入文本文件
 
+    # —— 小念的「性格情感权重系统」：情绪随聊天/行为波动，性格缓慢演变 ——
+    # 情绪维度：joy 开心 / anger 生气 / sadness 伤心 / calm 平静 / anxiety 不安。
+    # 性格由长期情绪累计的【差值】决定，变化很慢（需累计差值超阈值且稳定多次才切换）。
+    # 底层逻辑不变：无论情绪/性格如何，小念的最终目的始终是「让玩家生活越来越好」。
+    "emotion_enabled": _bool(os.getenv("EMOTION_ENABLED", "true")),
+    "emotion_llm_perceive": _bool(os.getenv("EMOTION_LLM_PERCEIVE", "false")),  # true=用 LLM 判断情绪（更准但多一次 API 调用）
+    "emotion_accum_rate": float(os.getenv("EMOTION_ACCUM_RATE", "1.0")),  # 长期累计速率（越大性格演变越快）
+    "emotion_analyze_min": int(os.getenv("EMOTION_ANALYZE_MIN", "10")),  # 每隔多久分析一次性格演变（分钟）
+
     # —— 小念的输入条（初始聊天框，只保留输入框）——
     "input_bg": os.getenv("INPUT_BG", "#241f33"),          # 输入框背景色
     "input_fg": os.getenv("INPUT_FG", "#ffd9e8"),          # 输入框文字颜色

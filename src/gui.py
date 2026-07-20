@@ -128,6 +128,16 @@ class App:
         except Exception as e:
             self.append("系统", f"自主权限未启动：{e}")
 
+        # 性格情感权重系统：情绪随聊天/行为波动，性格缓慢演变（底层目的不变）
+        self.emotion = None
+        self.emotion_win = None          # 可视化心情面板的独立窗口
+        self.emotion_history = []        # 情绪波动历史（用于起伏曲线）
+        try:
+            from emotion import EmotionEngine
+            self.emotion = EmotionEngine(self)
+        except Exception as e:
+            self.append("系统", f"情感系统未启动：{e}")
+
         # 语音：输入(ASR) / 输出(TTS)，配置驱动、可降级
         self.voice = VoiceInput(
             enabled=CONFIG.get("voice_input_enabled", False),
@@ -151,7 +161,14 @@ class App:
         self.tts.output_device = self.style.get("output_device", "")
 
         try:
-            self.assistant = Assistant(autonomy=self.autonomy)
+            self.assistant = Assistant(autonomy=self.autonomy, emotion=self.emotion)
+            # 让情感引擎在开启 LLM 感知时用对话模型判断情绪（默认关闭，用关键词规则）
+            if self.emotion is not None:
+                try:
+                    from emotion import set_llm_perceive_fn
+                    set_llm_perceive_fn(self.assistant.llm_perceive)
+                except Exception:
+                    pass
             self._apply_model_state()   # 应用已保存的模型选择
             self._init_reply_queue()   # 回复队列 + 主动关心计时（用户连续输入串行输出）
             self.start_proactive()     # 并行条件循环：空闲关心 / 软件搭话
@@ -160,6 +177,8 @@ class App:
             self.start_hotkeys()    # 全局快捷键：Ctrl+Alt+V 语音输入 / Ctrl+Alt+G 控制台
             if self.autonomy is not None:
                 self.autonomy.start()   # 启动习惯分析线程（受 autonomy_enabled 控制）
+            if self.emotion is not None:
+                self._start_emotion_loop()   # 启动性格缓慢演变的分析线程
         except RuntimeError as e:
             self.append("系统", str(e))
 
@@ -1554,6 +1573,12 @@ class App:
                     self.autonomy.record_event(event)
                 except Exception:
                     pass
+            # 行为信号 → 情感引擎（玩家行为也会让小念产生情绪，如深夜久坐让她略不安）
+            if self.emotion is not None:
+                try:
+                    self.emotion.perceive(event=event, source="behavior")
+                except Exception:
+                    pass
             # 收到屏幕活动事件 → 让小念生成一条正反馈并说出来（复用回复管线）
             try:
                 msg = self.assistant.screen_feedback(event)
@@ -1626,6 +1651,263 @@ class App:
         if key is None or key.startswith("screen_watch_"):
             self.update_screen_watch_params()
 
+    # ---------- 情感系统：GUI 侧回调（面板刷新 / 提示 / 定时分析）----------
+    def on_emotion_changed(self, snapshot):
+        """情感引擎状态变化后的回调：刷新控制台面板 + 可视化心情窗口。"""
+        try:
+            self.root.after(0, self._refresh_emotion_panel)
+        except Exception:
+            pass
+        try:
+            self.root.after(0, self._refresh_emotion_window)
+        except Exception:
+            pass
+
+    def emotion_toast(self, msg, ms=6000):
+        """小念性格/情绪变化的轻提示（复用语音状态条，自动消失）。"""
+        self.show_voice_status(msg, ms)
+
+    def _refresh_emotion_panel(self):
+        if getattr(self, "emotion_status", None) is None or self.emotion is None:
+            return
+        s = self.emotion.snapshot()
+        lines = [f"性格底色：{s['personality']}　主导情绪：{s['dominant']}"]
+        for k, v in s["emotion"].items():
+            bar = "█" * int(v * 16)
+            lines.append(f"  {k} {bar} {v:.2f}")
+        try:
+            self.emotion_status.config(text="\n".join(lines))
+        except Exception:
+            pass
+
+    def _start_emotion_loop(self):
+        """定时分析性格演变（性格变化很慢，需长期累计差值 + 稳定多次）。"""
+        import threading as _th
+        interval = max(300, int(CONFIG.get("emotion_analyze_min", "10")) * 60)
+
+        def loop():
+            import time as _t
+            while True:
+                _t.sleep(interval)
+                if self.emotion is not None:
+                    try:
+                        self.emotion.analyze_personality()
+                    except Exception:
+                        pass
+
+        _th.Thread(target=loop, daemon=True).start()
+
+    # ---------- 可视化「心情面板」（独立窗口，可开关）----------
+    def _emo_colors(self):
+        """情绪维度 → 颜色（开心/生气/伤心/平静/不安）。"""
+        return {
+            "开心": "#ff8fb1", "生气": "#ff6b6b", "伤心": "#7aa7ff",
+            "平静": "#7ee0c0", "不安": "#ffd166",
+        }
+
+    def toggle_emotion_panel(self):
+        """开关可视化心情面板（控制台按钮 / 快捷键 Ctrl+Alt+E）。"""
+        win = getattr(self, "emotion_win", None)
+        if win is not None and win.winfo_exists():
+            self._close_emotion_panel()
+        else:
+            self._open_emotion_panel()
+
+    def _close_emotion_panel(self):
+        win = getattr(self, "emotion_win", None)
+        if win is not None and win.winfo_exists():
+            try:
+                win.destroy()
+            except Exception:
+                pass
+        self.emotion_win = None
+
+    def _open_emotion_panel(self):
+        if self.emotion is None:
+            return
+        # 已开则聚焦，不重复创建
+        if getattr(self, "emotion_win", None) and self.emotion_win.winfo_exists():
+            self.emotion_win.lift()
+            self.emotion_win.focus_force()
+            return
+        TH = getattr(self, "THEME", None)
+        panel = TH["panel"] if TH else "#2a2440"
+        accent = TH["accent"] if TH else "#ff8fb1"
+        muted = TH["muted"] if TH else "#9a93b0"
+        text = TH["text"] if TH else "#f3eefb"
+
+        win = tk.Toplevel(self.root)
+        self.emotion_win = win
+        win.title(f"{CONFIG['name']} · 心情面板")
+        win.geometry("380x480")
+        win.configure(bg=panel)
+        win.attributes("-topmost", True)
+        win.protocol("WM_DELETE_WINDOW", self._close_emotion_panel)
+
+        # —— 滚动容器：内容超高时可滚动查看 ——
+        _scroller = tk.Frame(win, bg=panel)
+        _scroller.pack(fill=tk.BOTH, expand=True)
+        _canvas = tk.Canvas(_scroller, bg=panel, highlightthickness=0)
+        _vsb = tk.Scrollbar(_scroller, orient=tk.VERTICAL, command=_canvas.yview)
+        _canvas.configure(yscrollcommand=_vsb.set)
+        _vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        _canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        inner = tk.Frame(_canvas, bg=panel)
+        _canvas.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>",
+                   lambda e: _canvas.configure(scrollregion=_canvas.bbox("all")))
+        _canvas.bind_all("<MouseWheel>",
+                         lambda e: _canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
+        win.bind("<Destroy>", lambda e: _canvas.unbind_all("<MouseWheel>"))
+
+        # —— 当前性格（可变化）——
+        tk.Label(inner, text="当前性格底色", fg=muted, bg=panel,
+                 font=("Microsoft YaHei", 9)).pack(anchor="w", padx=16, pady=(12, 0))
+        win.trait_lbl = tk.Label(inner, text="温柔平静", fg=accent, bg=panel,
+                                 font=("Microsoft YaHei", 22, "bold"))
+        win.trait_lbl.pack(anchor="w", padx=16, pady=(0, 2))
+        win.sub_lbl = tk.Label(inner, text="", fg=muted, bg=panel,
+                               font=("Microsoft YaHei", 9), wraplength=340,
+                               justify="left")
+        win.sub_lbl.pack(anchor="w", padx=16, pady=(0, 6))
+
+        # —— 情绪波动（实时条）——
+        tk.Label(inner, text="情绪波动（实时）", fg=muted, bg=panel,
+                 font=("Microsoft YaHei", 9)).pack(anchor="w", padx=16, pady=(4, 2))
+        win.bar_canvas = tk.Canvas(inner, width=348, height=140, bg=panel,
+                                   highlightthickness=0)
+        win.bar_canvas.pack(padx=8)
+
+        # —— 最近的情绪起伏（曲线）——
+        tk.Label(inner, text="最近的情绪起伏", fg=muted, bg=panel,
+                 font=("Microsoft YaHei", 9)).pack(anchor="w", padx=16, pady=(6, 2))
+        win.spark_canvas = tk.Canvas(inner, width=348, height=150, bg=panel,
+                                     highlightthickness=0)
+        win.spark_canvas.pack(padx=8, pady=(0, 6))
+
+        # —— 底部按钮（自包含，兼容有无 THEME/_btn 的副本）——
+        btn_bg = TH["btn"] if TH else "#3a3358"
+        btn_hot = TH["btn_hot"] if TH else "#4a4270"
+        btn_row = tk.Frame(inner, bg=panel)
+        btn_row.pack(pady=6)
+
+        def _mk_btn(parent, txt, cmd):
+            b = tk.Button(parent, text=txt, command=cmd, bg=btn_bg, fg=text,
+                          activebackground=btn_hot, activeforeground=text,
+                          relief=tk.FLAT, borderwidth=0,
+                          font=("Microsoft YaHei", 9, "bold"), cursor="hand2",
+                          width=11)
+            return b
+
+        _mk_btn(btn_row, "查看心情", self._emo_view_feelings).pack(side=tk.LEFT, padx=5)
+        _mk_btn(btn_row, "重置情感", self._emo_reset).pack(side=tk.LEFT, padx=5)
+        _mk_btn(btn_row, "关闭面板", self._close_emotion_panel).pack(side=tk.LEFT, padx=5)
+
+        # 立即刷新一帧 + 启动采样（每 2 秒记录一次起伏）
+        self.emotion_history = []
+        self._refresh_emotion_window()
+        self.root.after(2000, self._emo_sample)
+
+    def _emo_view_feelings(self):
+        if self.emotion is not None:
+            try:
+                messagebox.showinfo(f"{CONFIG['name']} 的心情",
+                                    self.emotion.describe(), parent=self.root)
+            except Exception:
+                pass
+
+    def _emo_reset(self):
+        if self.emotion is None:
+            return
+        if messagebox.askyesno("重置小念的情感",
+                               "确定要清空小念的情绪与性格、恢复初始「温柔平静」吗？",
+                               parent=self.root):
+            self.emotion.reset()
+            self.emotion_history = []
+            self._refresh_emotion_window()
+            self._refresh_emotion_panel()
+
+    def _emo_sample(self):
+        """每 2 秒采一次情绪快照，画成起伏曲线（仅面板开着时运行）。"""
+        win = getattr(self, "emotion_win", None)
+        if win is None or not win.winfo_exists():
+            return
+        try:
+            s = self.emotion.snapshot()
+            self.emotion_history.append(s["emotion"])
+            if len(self.emotion_history) > 120:
+                self.emotion_history.pop(0)
+            self._refresh_emotion_window()
+        except Exception:
+            pass
+        self.root.after(2000, self._emo_sample)
+
+    def _refresh_emotion_window(self):
+        win = getattr(self, "emotion_win", None)
+        if win is None or not win.winfo_exists():
+            return
+        try:
+            s = self.emotion.snapshot()
+            win.trait_lbl.config(text=s["personality"])
+            dom, sec = s["dominant"], s["secondary"]
+            sub = f"此刻主导情绪：{dom}"
+            if sec:
+                sub += f"　·　偶尔带着「{sec}」的底色"
+            win.sub_lbl.config(text=sub)
+            self._draw_emotion_bars(win.bar_canvas, s["emotion"])
+            self._draw_emotion_spark(win.spark_canvas)
+        except Exception:
+            pass
+
+    def _draw_emotion_bars(self, canvas, emotion):
+        canvas.delete("all")
+        W = canvas.winfo_width() or 348
+        H = canvas.winfo_height() or 140
+        colors = self._emo_colors()
+        dims = list(emotion.keys())   # 开心/生气/伤心/平静/不安
+        n = len(dims)
+        row_h = H / n
+        label_w = 40
+        track_x = label_w + 6
+        track_w = W - track_x - 40
+        for i, dim in enumerate(dims):
+            y0 = i * row_h
+            cy = y0 + row_h / 2
+            canvas.create_text(6, cy, text=dim, anchor="w",
+                               fill="#cfc8e0", font=("Microsoft YaHei", 9))
+            canvas.create_rectangle(track_x, y0 + 5, track_x + track_w, y0 + row_h - 5,
+                                    fill="#1d1830", outline="")
+            v = min(1.0, max(0.0, emotion[dim]))
+            fw = max(2, int(track_w * v))
+            canvas.create_rectangle(track_x, y0 + 5, track_x + fw, y0 + row_h - 5,
+                                    fill=colors.get(dim, "#ff8fb1"), outline="")
+            canvas.create_text(track_x + track_w + 4, cy, text=f"{v:.2f}",
+                               anchor="w", fill="#9a93b0", font=("Microsoft YaHei", 8))
+
+    def _draw_emotion_spark(self, canvas):
+        canvas.delete("all")
+        hist = getattr(self, "emotion_history", [])
+        W = canvas.winfo_width() or 348
+        H = canvas.winfo_height() or 150
+        colors = self._emo_colors()
+        pad = 8
+        if len(hist) < 2:
+            canvas.create_text(W / 2, H / 2,
+                               text="（聊天或互动后，这里会画出情绪起伏）",
+                               fill="#9a93b0", font=("Microsoft YaHei", 9))
+            return
+        n = len(hist)
+        for dim in hist[0].keys():
+            pts = []
+            for i, h in enumerate(hist):
+                x = pad + (W - 2 * pad) * (i / (n - 1))
+                v = min(1.0, max(0.0, h.get(dim, 0)))
+                y = (H - pad) - (H - 2 * pad) * v
+                pts.append((x, y))
+            for j in range(len(pts) - 1):
+                canvas.create_line(pts[j][0], pts[j][1], pts[j + 1][0], pts[j + 1][1],
+                                   fill=colors.get(dim, "#ff8fb1"), width=2)
+
     # ---------- 接收 live2d 窗口反向指令（输入框显隐等）----------
     def start_control_server(self):
         port = int(CONFIG.get("gui_control_port", 9744))
@@ -1675,8 +1957,9 @@ class App:
 
     # ---------- 全局快捷键（Ctrl+Alt+V 语音 / Ctrl+Alt+G 控制台）----------
     def start_hotkeys(self):
-        """注册两个全局热键（同一线程，避免重复与跨线程丢消息）：
-           Ctrl+Alt+V -> 触发语音输入；Ctrl+Alt+G -> 开关“小念控制台”。
+        """注册全局热键（同一线程，避免重复与跨线程丢消息）：
+           Ctrl+Alt+V -> 触发语音输入；Ctrl+Alt+G -> 开关“小念控制台”；
+           Ctrl+Alt+E -> 开关“可视化心情面板”。
         关键修复（两个都会让热键彻底失灵，已修）：
         1) RegisterHotKey 的 hWnd 必须传 NULL(0)，不能传 HWND_MESSAGE(-3)，
            否则本机返回 1400(INVALID_WINDOW_HANDLE) 注册失败、两个键都没反应。
@@ -1694,7 +1977,7 @@ class App:
         except Exception:
             return
         MOD_CTRL, MOD_ALT, MOD_NOREPEAT = 0x0002, 0x0001, 0x4000
-        VK_V, VK_G = 0x56, 0x47
+        VK_V, VK_G, VK_E = 0x56, 0x47, 0x45
         WM_HOTKEY = 0x0312
 
         def loop():
@@ -1702,12 +1985,14 @@ class App:
                 # 注册 + 消息泵同线程（hWnd 用 NULL=0，绝不用 HWND_MESSAGE）
                 ok_v = user32.RegisterHotKey(0, 1, MOD_CTRL | MOD_ALT | MOD_NOREPEAT, VK_V)
                 ok_c = user32.RegisterHotKey(0, 2, MOD_CTRL | MOD_ALT | MOD_NOREPEAT, VK_G)
-                if not ok_v or not ok_c:
+                ok_e = user32.RegisterHotKey(0, 3, MOD_CTRL | MOD_ALT | MOD_NOREPEAT, VK_E)
+                if not ok_v or not ok_c or not ok_e:
                     # 注册失败大多是该组合键已被其它程序占用（错误码 1400/1401/1402）
                     try:
                         with open(os.path.join(CONFIG["data_dir"], "hotkey.log"),
                                   "a", encoding="utf-8") as f:
                             f.write(f"[hotkey] 注册失败：Ctrl+Alt+V={ok_v} Ctrl+Alt+G={ok_c} "
+                                    f"Ctrl+Alt+E={ok_e} "
                                     f"（可能被其它软件占用，需更换快捷键）\n")
                     except Exception:
                         pass
@@ -1718,6 +2003,8 @@ class App:
                             self.root.after(0, self._mic_toggle)
                         elif msg.wParam == 2:
                             self.root.after(0, self.toggle_console)
+                        elif msg.wParam == 3:
+                            self.root.after(0, self.toggle_emotion_panel)
                     user32.TranslateMessage(ctypes.byref(msg))
                     user32.DispatchMessageW(ctypes.byref(msg))
             except Exception:
@@ -1914,6 +2201,49 @@ class App:
         tk.Label(body,
                  text="小念只在白名单内改配置文件，绝不碰系统/代码/你的文件；"
                       "作息类大调整会弹窗问你。",
+                 fg=self.THEME["muted"], bg=self.THEME["panel"],
+                 font=("Microsoft YaHei", 8), wraplength=280,
+                 justify="left").pack(anchor="w", padx=14, pady=(0, 4))
+
+        # ---- 小念的性格与情绪 ----
+        self._hdr(body, "小念的性格与情绪", "情绪实时波动 · 性格缓慢演变")
+        self.emotion_status = tk.Label(
+            body, text="", fg=self.THEME["accent"], bg=self.THEME["panel"],
+            font=("Microsoft YaHei", 9), wraplength=280, justify="left",
+        )
+        self.emotion_status.pack(anchor="w", padx=14)
+        self._refresh_emotion_panel()
+
+        def _view_feelings():
+            if self.emotion is None:
+                return
+            messagebox.showinfo(f"{CONFIG['name']} 的心情", self.emotion.describe(), parent=self.root)
+
+        def _reset_feelings():
+            if self.emotion is None:
+                return
+            if messagebox.askyesno("重置小念的情感",
+                                   "确定要清空小念的情绪与性格、恢复初始「温柔平静」吗？",
+                                   parent=self.root):
+                self.emotion.reset()
+                self._refresh_emotion_panel()
+
+        def _toggle_emotion():
+            if self.emotion is None:
+                return
+            on = not self.emotion.enabled
+            self.emotion.set_mode(on)
+            self._refresh_emotion_panel()
+
+        e_row = tk.Frame(body, bg=self.THEME["panel"])
+        e_row.pack(pady=(6, 2))
+        self._btn(e_row, "查看心情", _view_feelings, width=12).pack(side=tk.LEFT, padx=6)
+        self._btn(e_row, "重置情感", _reset_feelings, width=12).pack(side=tk.LEFT, padx=6)
+        self._btn(e_row, "心情面板", self.toggle_emotion_panel, width=12).pack(side=tk.LEFT, padx=6)
+        self._btn(body, "开关情感系统", _toggle_emotion, width=28, hot=True).pack(pady=(4, 6))
+        tk.Label(body,
+                 text="情绪随你的聊天与行为实时波动；性格变化很慢，需情绪长期积累到足够大的差值才会改变。"
+                      "无论情绪如何，她让你生活更好的初心不变。",
                  fg=self.THEME["muted"], bg=self.THEME["panel"],
                  font=("Microsoft YaHei", 8), wraplength=280,
                  justify="left").pack(anchor="w", padx=14, pady=(0, 4))

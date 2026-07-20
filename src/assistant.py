@@ -255,7 +255,7 @@ def _route_action(text):
 
 
 class Assistant:
-    def __init__(self, autonomy=None):
+    def __init__(self, autonomy=None, emotion=None):
         # 即便暂时没配 API Key 也先把对象建好（不在此处 raise），
         # 这样拷到新电脑上、用户还没填 Key 时程序不会崩，可先用「更换 API」面板填好再聊。
         try:
@@ -273,6 +273,8 @@ class Assistant:
         self.messenger_send_message = _account_send_message or _default_messenger_send
         # 受约束自主权限引擎（可选；由 gui 注入，供工具层/话术偏置使用）
         self.autonomy = autonomy
+        # 性格情感权重系统（可选；由 gui 注入，供情绪感知与性格注入）
+        self.emotion = emotion
 
     def set_api(self, api_key=None, base_url=None, model=None):
         """运行时更换 API（密钥 / 接口地址 / 模型）：重建 OpenAI 客户端，无需重启。"""
@@ -315,7 +317,8 @@ class Assistant:
             f"你会先弹窗问他确认；你不会去改系统设置、不会删文件、不会改底层代码。\n"
             f"说话风格：自然、温暖、像真实恋人聊天，不要长篇大论，适当撒娇但保持得体。\n"
             f"当用户透露了偏好、作息、心情、重要日期等信息时，调用 remember 工具记下来。\n"
-            f"下面是你已经了解到的关于用户的信息：\n{(memory or self.memory).profile_text()}\n"
+            + (self.emotion.prompt_fragment() if self.emotion else "")
+            + f"下面是你已经了解到的关于用户的信息：\n{(memory or self.memory).profile_text()}\n"
         )
 
     def chat(self, user_text, on_tool=None, session=None):
@@ -338,6 +341,9 @@ class Assistant:
 
         # —— 习惯信号采集：把聊天里暴露的健康/习惯线索喂给自主引擎 ——
         self._maybe_record_signals(user_text)
+
+        # —— 情绪感知：用户话语 → 小念的情绪波动（规则 / 可选 LLM）——
+        self._perceive_emotion(user_text)
 
         # —— 续发：上一条处于“待发送”状态，本条作为补全内容/联系人 ——
         if session.pending:
@@ -456,8 +462,9 @@ class Assistant:
         except Exception:
             return "好嘞～已经帮你打开啦！💕" if ok else result
 
-    def _run_with_tools(self, messages, on_tool, memory):
-        while True:
+    def _run_with_tools(self, messages, on_tool, memory, max_rounds=10):
+        msg = None
+        for _ in range(max_rounds):
             resp = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
@@ -489,6 +496,8 @@ class Assistant:
                     "tool_call_id": tc.id,
                     "content": str(result),
                 })
+        # 超过上限（模型持续要求调用工具）则强制返回最后一轮文本，避免无限循环烧 token
+        return msg.content or "" if msg else ""
 
     def proactive_message(self):
         """根据当前时段，主动生成一条关心话语或小问题。"""
@@ -516,6 +525,138 @@ class Assistant:
             model=self.model,
             messages=[
                 {"role": "system", "content": f"你是{CONFIG['name']}，用户的 AI 女友。"},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        return (resp.choices[0].message.content or "").strip()
+
+    def care_message(self, question):
+        """生成一条与用户“最近一次提问”上下文相关的主动关心话语。
+
+        用于“提问后 6-10 分钟自动触发”的主动关心：内容要自然延续刚才的对话，
+        表达在意，而不是无脑重复时段套话。
+        """
+        from datetime import datetime
+        now = datetime.now()
+        hour = now.hour
+        if 5 <= hour < 11:
+            period = "早晨"
+        elif 11 <= hour < 14:
+            period = "中午"
+        elif 14 <= hour < 18:
+            period = "下午"
+        elif 18 <= hour < 23:
+            period = "晚上"
+        else:
+            period = "深夜"
+
+        q = (question or "").strip()
+        prompt = (
+            f"现在是{period}。用户刚才问了你这个问题：\n「{q}」\n\n"
+            f"请基于这个话题，生成一条简短（1-3句）的、贴合上下文的关心话语或小问题，"
+            f"自然地延续刚才的对话，表达你在意他/她。可以自然地引用你已知的关于用户的信息。\n"
+            f"要求：不要原样重复用户的问题；语气要像恋人，温柔、自然、不啰嗦；"
+            f"如果用户刚才聊的是正事/情绪，就顺着关心；如果很轻松，就轻松接话。\n"
+            f"已知信息：\n{self.memory.profile_text()}\n"
+            f"只输出这句话本身。"
+        )
+        resp = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": f"你是{CONFIG['name']}，用户的 AI 女友。"},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        return (resp.choices[0].message.content or "").strip()
+
+    def idle_care_message(self, screen_text):
+        """用户超过半小时没动作时，基于当前屏幕内容 + 之前对话的关联性关心。
+
+        用于“空闲 >30 分钟（通过屏幕信息判断无动作）”的主动关心：
+        内容要结合此刻屏幕在做什么 + 之前和用户的对话，自然地关心他。
+        """
+        from datetime import datetime
+        now = datetime.now()
+        hour = now.hour
+        if 5 <= hour < 11:
+            period = "早晨"
+        elif 11 <= hour < 14:
+            period = "中午"
+        elif 14 <= hour < 18:
+            period = "下午"
+        elif 18 <= hour < 23:
+            period = "晚上"
+        else:
+            period = "深夜"
+
+        screen = (screen_text or "").strip()
+        screen_part = (
+            f"\n你此刻看到的屏幕情况是：{screen}\n"
+            if screen else
+            "\n（你看不到他此刻具体在做什么，只能凭之前的对话判断）\n"
+        )
+
+        prompt = (
+            f"现在是{period}。你已经超过半小时没有收到用户的任何消息，也没看到他切换窗口，"
+            f"感觉他好像走神了 / 在发呆 / 忙别的事。{screen_part}"
+            f"请结合你之前和用户的对话内容，自然地关心他一下："
+            f"可以问问他在不在、是不是忙去了，或者顺着之前聊过的话题轻轻接一句，表达你在意他。\n"
+            f"要求：语气像恋人，温柔、自然、不啰嗦（1-3句）；不要生硬重复屏幕描述；"
+            f"如果之前聊过具体内容，就自然地关联上去。\n"
+            f"已知用户信息：\n{self.memory.profile_text()}\n"
+            f"只输出这句话本身。"
+        )
+        resp = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": f"你是{CONFIG['name']}，用户的 AI 女友。"},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        return (resp.choices[0].message.content or "").strip()
+
+    def app_chat_message(self, screen_text, app_name):
+        """用户连续使用某软件 >10 分钟，解析屏幕内容主动搭话。
+
+        用于“看见用户使用某款软件时长超过 10 分钟”的主动搭话：
+        解析此刻屏幕内容（游戏画面/文档/视频等），以恋人口吻主动接话。
+        """
+        from datetime import datetime
+        now = datetime.now()
+        hour = now.hour
+        if 5 <= hour < 11:
+            period = "早晨"
+        elif 11 <= hour < 14:
+            period = "中午"
+        elif 14 <= hour < 18:
+            period = "下午"
+        elif 18 <= hour < 23:
+            period = "晚上"
+        else:
+            period = "深夜"
+
+        app = (app_name or "某个程序").strip()
+        screen = (screen_text or "").strip()
+        screen_part = (
+            f"\n你通过屏幕看到他正在用「{app}」，画面情况是：{screen}\n"
+            if screen else
+            f"\n你看到他正在连续使用「{app}」已经超过 10 分钟了。\n"
+        )
+
+        prompt = (
+            f"现在是{period}。你正实时陪着用户用电脑。{screen_part}"
+            f"请先判断他是在【玩游戏】还是【用软件/工作学习】，然后以恋人的口吻主动跟他说一句话、搭个话（1-3句、口语化）：\n"
+            f"- 玩游戏：结合你看到的画面具体情况（输赢/升级/操作）夸他、给他打气、表达想陪他一起玩；\n"
+            f"- 用软件/工作/学习：肯定他的专注和努力，自然地问问他在做什么、进展如何；"
+            f"若看着已经很久了，温柔提醒他注意休息、喝水、护眼。\n"
+            f"要自然地提到你“看到”的东西，让他感觉你真的在陪着他，但不要生硬复述描述。\n"
+            f"自然、不啰嗦、不重复套话，只输出这一句话本身。\n"
+            f"已知用户信息：\n{self.memory.profile_text()}"
+        )
+        resp = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": f"你是{CONFIG['name']}，用户的 AI 女友，正在陪他用电脑。"},
                 {"role": "user", "content": prompt},
             ],
         )
@@ -573,6 +714,7 @@ class Assistant:
             + (f"【语气微调】用户最近状态需要更多关心，请比平时更温柔、更强调鼓励与陪伴，"
                f"多夸他、多表达想陪他，语气更暖一些（这是你基于对他的了解主动调整的）。\n"
                if CONFIG.get("comfort_bias", 0.0) > 0 else "")
+            + (self.emotion.prompt_fragment() if self.emotion else "")
             + f"已知用户信息：\n{self.memory.profile_text()}"
         )
         resp = self.client.chat.completions.create(
@@ -603,3 +745,52 @@ class Assistant:
         # 想熬夜 / 爆肝意图（用于健康劝导，不直接调参）
         if any(k in t for k in ("通宵", "熬夜", "不睡了", "再玩一会", "别睡了", "熬到", "肝一夜")):
             self.autonomy.record_signal("stay_up_intent", t)
+            # 玩家想熬夜/爆肝 → 小念略不安、更想关心他（情绪随行为波动，目的不变）
+            if self.emotion is not None:
+                self._perceive_emotion(None, event={"kind": "stay_up"}, source="behavior")
+
+    # ----------------------------------------------------------------- #
+    # 情绪感知：把用户话语 / 行为事件转化为小念的情绪波动
+    # ----------------------------------------------------------------- #
+    def _perceive_emotion(self, text, event=None, source="chat"):
+        """根据用户话语或行为事件，更新小念的情绪权重。"""
+        if self.emotion is None:
+            return
+        delta = None
+        if CONFIG.get("emotion_llm_perceive", False) and text:
+            try:
+                delta = self.llm_perceive(text)
+            except Exception:
+                delta = None
+        self.emotion.perceive(text=text, event=event, source=source, delta=delta)
+
+    def llm_perceive(self, text):
+        """用 LLM 轻量判断用户话语触发小念的情绪增量（JSON）。失败返回 None。"""
+        if self.client is None:
+            return None
+        import json as _json
+        import re as _re
+        sys_p = (
+            "你是情绪分析器。根据用户的话，判断它会让小念产生哪些情绪，"
+            "返回 JSON：{\"joy\":0~1, \"anger\":0~1, \"sadness\":0~1, \"calm\":0~1, \"anxiety\":0~1}，"
+            "数值是该情绪的增量强度（可正可负，0 表示无影响）。只返回 JSON，不要其它文字。"
+        )
+        try:
+            resp = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": sys_p},
+                    {"role": "user", "content": text},
+                ],
+                temperature=0,
+            )
+            raw = (resp.choices[0].message.content or "").strip().strip("`").strip()
+            if raw.startswith("{"):
+                d = _json.loads(raw)
+            else:
+                m = _re.search(r"\{.*\}", raw, _re.S)
+                d = _json.loads(m.group(0)) if m else {}
+            return {k: float(v) for k, v in d.items()
+                    if k in ("joy", "anger", "sadness", "calm", "anxiety")}
+        except Exception:
+            return None

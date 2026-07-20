@@ -424,6 +424,29 @@ def create_text_file(args, memory):
     return f"已经帮你把内容存到文件啦：{full}"
 
 
+@tool({
+    "type": "function",
+    "function": {
+        "name": "feelings_status",
+        "description": (
+            "查看小念此刻的情绪与性格底色（开心/生气/伤心/平静/不安，以及当前性格，"
+            "如温柔平静/活泼开心/傲娇小脾气/敏感爱哭/黏人紧张）。当用户问"
+            "“你现在心情怎么样/你是什么性格/你生我气了吗/你是不是不开心”等关心小念状态时使用。"
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    },
+})
+def feelings_status(args, memory):
+    try:
+        import emotion
+    except Exception:
+        return "小念的情感模块未加载。"
+    e = emotion.INSTANCE
+    if e is None:
+        return "小念的情感模块未加载。"
+    return e.describe()
+
+
 # 供 assistant 使用的 schema 列表（在所有 @tool 注册完成后构建）
 TOOL_SCHEMAS = [schema for schema, _ in TOOLS]
 
