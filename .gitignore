@@ -1,0 +1,42 @@
+# 虚拟环境与依赖
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# 个人密钥与本地配置（含 API Key，切勿提交/分享）
+.env
+.env.bak
+
+# 运行时生成的数据与日志
+data/
+*.log
+*.log.*
+sovits.log
+
+# 下载/缓存的大模型（体积大，按需本地生成，不入库）
+models/
+diag_recording.wav
+ref_yae_clean.wav
+
+# 系统/编辑器文件
+Thumbs.db
+.DS_Store
+
+# 内部开发笔记（含开发历史与本机绝对路径，不对外发布）
+MEMORY.md
+SESSION_NOTES.md
+@AutomationLog.txt
+
+# 临时/调试产物
+out.txt
+pw_install.txt
+pw_install2.txt
+*.wav
+repro*.log
+
+# 开发/调试脚本（用户运行不需要）
+test_*.py
+debug_mic.py
+diag_mic.py
+prep_ref_audio.py
