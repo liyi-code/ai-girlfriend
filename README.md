@@ -18,7 +18,8 @@
 - 💾 对话与记忆长期保存
 
 ## 快速开始
-1. 一台 **Windows** 电脑，已安装 **Python 3.10+**（安装时勾选「Add python.exe to PATH」）。
+1. 一台 **Windows** 电脑，已安装 **Python 3.10 ~ 3.13**（推荐 3.11；安装时勾选「Add python.exe to PATH」）。
+   > 注意：**暂不支持 Python 3.14**——项目依赖（numpy / av / faster-whisper 等）在 3.14 上暂无官方预编译包，会卡在源码编译。若你已装 3.14 也无需卸载，脚本会自动用已装的 3.11/3.12/3.13 建环境；没有就装一个 3.11 即可（多个 Python 可共存）。
 2. 双击 **`启动.bat`**：首次自动建 `venv`、装依赖；无 `.env` 则从模板生成；开语音输入会自动拉取识别模型（国内镜像、断点续传）。
 3. 填「对话钥匙」：启动后点输入条 `◐` →「API 设置」填 `API Key`/`Base URL`/`模型名` →「测试连接」→「保存并应用」，立刻能聊。
    （也可复制 `.env.example` 为 `.env` 填写 `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `MODEL`。）
