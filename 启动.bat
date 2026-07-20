@@ -64,15 +64,27 @@ if errorlevel 1 (
     exit /b 1
 )
 
-::::: 3) 没有 .env 就从模板生成一份，提醒用户填写
+::::: 3) 没有 .env 就从模板生成一份，并直接打开让用户输入
+:::::    顺手规避 Windows 记事本把 .env 存成 .env.txt 的经典坑（否则会一直反复生成空白 .env）
 if not exist ".env" (
-    if exist ".env.example" (
-        copy .env.example .env >nul
+    if exist ".env.txt" (
         echo.
-        echo 已根据 .env.example 生成 .env，请打开填写你的 OPENAI_API_KEY 等配置，然后重新运行本脚本。
-    ) else (
-        echo 未找到 .env 与 .env.example，请手动创建 .env 配置文件。
+        echo 发现 .env.txt（Windows 记事本自动加了 .txt 后缀），正在重命名为 .env ...
+        move /Y ".env.txt" ".env" >nul
     )
+    if not exist ".env" (
+        if exist ".env.example" (
+            copy .env.example .env >nul
+        ) else (
+            echo 未找到 .env.example，请手动创建 .env 配置文件。
+            pause
+            exit /b 1
+        )
+    )
+    echo.
+    echo 已生成 .env，现在用记事本打开，请填写 OPENAI_API_KEY 后「保存」「关闭」，
+    echo 然后回到本窗口按任意键继续（之后重跑本脚本将不再重复此步骤）。
+    start /wait "" "%SystemRoot%\system32\notepad.exe" .env
     pause
     exit /b 0
 )
