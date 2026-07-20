@@ -6,15 +6,6 @@ from config import CONFIG
 from memory import Memory
 from tools import TOOL_SCHEMAS, execute_tool
 from launcher import launcher
-try:
-    from transport.registry import send_message as _account_send_message
-except Exception:  # pragma: no cover
-    _account_send_message = None
-
-
-def _default_messenger_send(app, contact, message):
-    """没有任何账号接入时的兜底，避免调用方崩溃。"""
-    return (False, "小念还没有连接任何账号（QQ/微信未启用），无法代为发送。")
 
 
 class Session:
@@ -27,7 +18,6 @@ class Session:
     def __init__(self, memory, is_owner=False):
         self.memory = memory
         self.is_owner = is_owner
-        self.pending = None        # (app, contact|None, message|None)
         self.lock = threading.Lock()
 
 
@@ -115,102 +105,14 @@ def _strip_filler(s):
     return _FILLER_RE.sub("", s).strip()
 
 
-def _parse_send(text):
-    """识别“给微信/QQ 联系人发消息”意图。
-
-    返回 (app, contact, message)；app/contact/message 可能为空（缺哪样哪样空，
-    由 chat() 用 pending 状态追问补全）。不是发消息意图则返回 None。
-    """
-    t = (text or "").strip()
-    if not t:
-        return None
-    # 必须是明确的发消息意图，避免把正常聊天（如“给我说个故事”）误判为发消息。
-    # 规则 1：出现“发消息/发信息/发条消息/发个消息/留言/发给”等明确词；
-    # 规则 2：出现“给<非代词对象>发/说”结构（如“给张三发”“给张三说”）。
-    send_kw = re.search(
-        r"发\s*(?:送|条|个|一)?\s*(?:消息|信息)|发个信|留言|发给", t
-    )
-    give_target = re.search(
-        r"给\s*(?!我|你|他|她|咱|咱们|你们|他们|您)\S{1,20}?\s*(?:发|说)", t
-    )
-    if not (send_kw or give_target):
-        return None
-
-    app = "微信" if "微信" in t else None
-    if app is None and re.search(r"qq|企鹅|腾讯qq", t, re.I):
-        app = "QQ"
-
-    # —— 联系人：多种句式 ——
-    contact = ""
-    # 1) 给 [app] 的/上的 <name> 发/说/留言 ...
-    m = re.search(
-        r"给\s*(?:微信|qq|企鹅)?\s*(?:的|上的?)?\s*"
-        r"([^\s,，:：。.]+?)\s*(?:发|说|留言|[:：,，]|$)",
-        t, re.I,
-    )
-    if m:
-        contact = m.group(1)
-    # 2) 发[消息]给 [app] 的/上的 <name>
-    if not contact:
-        m = re.search(
-            r"发(?:送|条|个)?\s*(?:消息|信息)?\s*给\s*"
-            r"(?:微信|qq|企鹅)?\s*(?:的|上的?)?\s*"
-            r"([^\s,，:：。.]+?)\s*(?:[:：,，]|$)",
-            t, re.I,
-        )
-        if m:
-            contact = m.group(1)
-    # 3) 在 <name>(里/群/群聊) 发/说/留言 ...（群聊常见说法）
-    if not contact:
-        m = re.search(
-            r"在\s*([^\s,，:：。.]+?)\s*(?:里|群|群聊)?\s*(?:发|说|留言)",
-            t, re.I,
-        )
-        if m:
-            contact = m.group(1)
-
-    # —— 消息：在“发[消息][给联系人]：/说：/内容是”之后到结尾 ——
-    message = ""
-    m = re.search(
-        r"(?:发\s*(?:送|条|个)?\s*(?:消息|信息|微信消息|qq消息)?"
-        r"\s*(?:给\s*(?:微信|qq|企鹅)?\s*(?:的|上的?)?\s*[^\s,，:：。.]+)?"
-        r"\s*[:：,，]?\s*(?:内容是?|内容)?"
-        r"|说|留言)\s*[:：,，]?\s*(?:内容是?|内容)?\s*(.*)$",
-        t, re.I,
-    )
-    if m:
-        message = m.group(1)
-
-    # 注意：message 是发给联系人的原话，不能像联系人那样用 _clean 去掉语气词
-    contact = _clean(contact)
-    contact = re.sub(r"^(?:上的?|里|那里|这边)\s*", "", contact)
-    contact = re.sub(r"(联系人|好友|朋友|同学|同事)$", "", contact).strip()
-    message = message.strip()
-    message = re.sub(r"^(?:内容是?|内容|说：|说:)\s*", "", message).strip()
-
-    # 无效联系人（动作词 / App 名 / 仅“群/群里”之类）-> 留空让 pending 追问，
-    # 但保留已给出的消息内容
-    if (not contact or contact == app or contact.lower() in ("微信", "qq", "企鹅")
-            or re.search(r"发|消息|信息|说|留言", contact)
-            or contact in ("群", "群里", "群聊", "群里面")):
-        return (app, "", message)
-    return (app, contact, message)
-
-
 def _route_action(text):
     """识别明确动作意图，返回 (tool_name, args) 或 None。
 
-    优先级：发消息 > 打开软件/网址 > 搜索文件 > 查询系统状态。
+    优先级：打开软件/网址 > 搜索文件 > 查询系统状态。
     """
     t = (text or "").strip()
     if not t:
         return None
-
-    # 0) 发消息（最高优先级，避免和“打开”等动作混淆）
-    s = _parse_send(t)
-    if s:
-        app, contact, message = s
-        return ("send_message", {"app": app, "contact": contact, "message": message})
 
     # 1) 打开 / 启动
     m = _OPEN_RE.match(t)
@@ -267,10 +169,8 @@ class Assistant:
             self.client = None
         self.model = CONFIG["model"]
         self.name = CONFIG["name"]
-        self.memory = Memory()                        # 主人的长期记忆（桌面 + 主人QQ/微信共享）
+        self.memory = Memory()                        # 主人的长期记忆（桌面窗口）
         self.owner_session = Session(self.memory, is_owner=True)
-        # 代发消息：默认走账号接入层，可被测试/外部替换
-        self.messenger_send_message = _account_send_message or _default_messenger_send
         # 受约束自主权限引擎（可选；由 gui 注入，供工具层/话术偏置使用）
         self.autonomy = autonomy
         # 性格情感权重系统（可选；由 gui 注入，供情绪感知与性格注入）
@@ -303,8 +203,6 @@ class Assistant:
             f"search_files 找文件，真正帮用户把事办成（如“帮我写个计划存下来”）。\n"
             f"- “打开/启动某个软件”这类动作会由系统直接执行，你只需自然回应即可，"
             f"不要自己再去尝试打开，也不要谎称已经打开。\n"
-            f"- 当用户要【给微信/QQ 联系人发消息】时，系统会直接执行 send_message，"
-            f"你只需自然回应，不要谎称已经发出，也不要自己去打字发送。\n"
             f"- 你能【看到用户的电脑屏幕】：当用户让你看屏幕、问画面上是什么、"
             f"这局打得怎么样、这个报错怎么回事等需要看画面才能回答的问题时，调用 look_at_screen；"
             f"根据真实看到的内容回答，不要凭空编造画面。\n"
@@ -324,8 +222,7 @@ class Assistant:
     def chat(self, user_text, on_tool=None, session=None):
         """对话入口。
 
-        session 为 None 时用主人的全局会话（桌面窗口）。bot 接入时，会为每个
-        (平台, 用户) 传入独立的 Session，避免多人 / 多渠道串台。
+        session 为 None 时用主人的全局会话（桌面窗口）。
         """
         if not CONFIG.get("api_key"):
             return ("我还没拿到 API Key 呢～点输入条上的 ◐ 打开设置，在「API 设置」里"
@@ -345,42 +242,6 @@ class Assistant:
         # —— 情绪感知：用户话语 → 小念的情绪波动（规则 / 可选 LLM）——
         self._perceive_emotion(user_text)
 
-        # —— 续发：上一条处于“待发送”状态，本条作为补全内容/联系人 ——
-        if session.pending:
-            app, contact, message = session.pending
-            if any(k in user_text for k in ("取消", "不用了", "算了", "不发了", "不要发", "别发")):
-                session.pending = None
-                reply = "好哒，那就不发了～还有什么要我帮忙的吗？"
-                mem.add_message("assistant", reply)
-                return reply
-            if contact is None:
-                # 上一条缺联系人，本条应是联系人名
-                name = re.sub(r"(联系人|好友|朋友)$", "", _strip_filler(user_text)).strip()
-                if not name:
-                    return "还是没听清要发给谁呀，告诉我联系人名字就好～"
-                if message:
-                    # 内容已给，直接补联系人并发出
-                    session.pending = None
-                    ok, msg = self.messenger_send_message(app, name, message)
-                    if on_tool:
-                        on_tool("send_message", {"app": app, "contact": name, "message": message}, msg)
-                    reply = self._reply_for_action(user_text, "send_message", msg, ok)
-                    mem.add_message("assistant", reply)
-                    return reply
-                session.pending = (app, name, None)
-                reply = f"收到，那要跟「{name}」说什么呢？我这就帮你发过去💕"
-                mem.add_message("assistant", reply)
-                return reply
-            else:
-                # 上一条有联系人，本条是消息内容
-                session.pending = None
-                ok, msg = self.messenger_send_message(app, contact, user_text)
-                if on_tool:
-                    on_tool("send_message", {"app": app, "contact": contact, "message": user_text}, msg)
-                reply = self._reply_for_action(user_text, "send_message", msg, ok)
-                mem.add_message("assistant", reply)
-                return reply
-
         # —— 确定性路由：明确动作直接执行，保证“说打开就打开、说搜就真搜” ——
         routed = _route_action(user_text)
         if routed:
@@ -393,27 +254,6 @@ class Assistant:
                     ok, msg = False, "网址格式不正确"
             elif tool_name == "open_application":
                 ok, msg = launcher.open(args["name"])
-            elif tool_name == "send_message":
-                app = args.get("app") or "微信"
-                contact = args.get("contact", "")
-                message = args.get("message", "")
-                if not contact:
-                    session.pending = (app, None, message)  # 记住已有内容
-                    reply = "你想发给谁呀？告诉我联系人名字，我马上帮你发～"
-                    mem.add_message("assistant", reply)
-                    return reply
-                if not message:
-                    session.pending = (app, contact, None)
-                    reply = f"好嘞～你想跟「{contact}」说什么呢？我这就帮你发过去💕"
-                    mem.add_message("assistant", reply)
-                    return reply
-                ok, msg = self.messenger_send_message(app, contact, message)
-                result = msg
-                if on_tool:
-                    on_tool(tool_name, args, result)
-                reply = self._reply_for_action(user_text, tool_name, result, ok)
-                mem.add_message("assistant", reply)
-                return reply
             else:
                 # search_files / get_system_status 等非启动类工具
                 msg = execute_tool(tool_name, args, mem)

@@ -35,17 +35,6 @@ CONFIG = {
     "proactive_interval_min": int(os.getenv("PROACTIVE_INTERVAL_MIN", "15")),
     "data_dir": os.path.join(BASE_DIR, "data"),
 
-    # —— 小念的 IM 接入（QQ / 微信）——
-    "qq_enabled": _bool(os.getenv("QQ_ENABLED", "false")),
-    "qq_ws_url": os.getenv("QQ_WS_URL", "ws://127.0.0.1:6700"),
-    "qq_token": os.getenv("QQ_TOKEN", ""),
-    "qq_owner": os.getenv("QQ_OWNER", ""),
-    "wechat_enabled": _bool(os.getenv("WECHAT_ENABLED", "false")),
-    "wechat_type": os.getenv("WECHAT_TYPE", "gewe"),          # gewe(免费) | padlocal(付费更稳)
-    "wechat_ws_url": os.getenv("WECHAT_WS_URL", "ws://127.0.0.1:2531"),
-    "wechat_token": os.getenv("WECHAT_TOKEN", ""),
-    "wechat_owner": os.getenv("WECHAT_OWNER", ""),
-
     # —— 小念的 Live2D 桌面形象 ——
     "live2d_enabled": _bool(os.getenv("LIVE2D_ENABLED", "false")),
     "live2d_model": _resolve_path(os.getenv("LIVE2D_MODEL", "")),
