@@ -16,6 +16,12 @@ import tools
 from launcher import launcher
 from voice import VoiceInput, TTS
 
+# 自动更新（便携分享版）：导入失败也不影响主程序
+try:
+    import updater
+except Exception:
+    updater = None
+
 
 class App:
     def __init__(self, root):
@@ -216,6 +222,23 @@ class App:
             except Exception:
                 pass
         root.after(0, _place)
+
+        # 自动更新（便携分享版）：启动后延迟几秒在后台静默检查并应用，
+        # 只落盘、不影响当前运行；更新成功弹个提示，失败则静默（绝不打断使用）。
+        if updater is not None and CONFIG.get("auto_update_enabled", True):
+            root.after(8000, self._auto_update_check)
+
+    def _auto_update_check(self):
+        """后台线程静默检查+应用更新。"""
+        def worker():
+            try:
+                applied, msg = updater.check_and_apply()
+                if applied:
+                    self.root.after(0, lambda: self.autonomy_toast(
+                        "✨ 小念已更新到新版本，重启后生效~"))
+            except Exception:
+                pass
+        threading.Thread(target=worker, daemon=True).start()
 
     def append(self, who, text):
         self.chat.config(state=tk.NORMAL)
@@ -2246,6 +2269,30 @@ class App:
                  font=("Microsoft YaHei", 8), wraplength=280,
                  justify="left").pack(anchor="w", padx=14, pady=(0, 4))
 
+        # ---- 软件更新（便携分享版）----
+        if updater is not None:
+            self._hdr(body, "软件更新", "自动/手动更新到最新版")
+            ver = updater.current_version()
+            tk.Label(body, text=f"当前版本：{ver}", fg=self.THEME["muted"],
+                     bg=self.THEME["panel"], font=("Microsoft YaHei", 9)
+                     ).pack(anchor="w", padx=14, pady=(4, 0))
+            self.update_status = tk.Label(
+                body, text="", fg=self.THEME["accent"], bg=self.THEME["panel"],
+                font=("Microsoft YaHei", 9), wraplength=280, justify="left")
+            self.update_status.pack(anchor="w", padx=14)
+            urow = tk.Frame(body, bg=self.THEME["panel"])
+            urow.pack(pady=(6, 2))
+            self._btn(urow, "检查更新", self._manual_update, width=12
+                      ).pack(side=tk.LEFT, padx=6)
+            self._btn(urow, "更新日志", self._view_changelog, width=12
+                      ).pack(side=tk.LEFT, padx=6)
+            tk.Label(body,
+                     text="更新只动程序文件，绝不碰你的密钥(.env)/聊天记录(data)/运行环境(venv)；"
+                          "更新前自动备份、更新后自动校验，出问题会回滚，绝不会把软件搞坏。",
+                     fg=self.THEME["muted"], bg=self.THEME["panel"],
+                     font=("Microsoft YaHei", 8), wraplength=280, justify="left"
+                     ).pack(anchor="w", padx=14, pady=(0, 6))
+
         # ---- 小念的性格与情绪 ----
         self._hdr(body, "小念的性格与情绪", "情绪实时波动 · 性格缓慢演变")
         self.emotion_status = tk.Label(
@@ -2297,6 +2344,40 @@ class App:
                   ).pack(side=tk.LEFT, padx=8)
         self._btn(row, "转个身", lambda: self._send_live2d_action("turn"), width=11
                   ).pack(side=tk.LEFT, padx=8)
+
+    # ---------- 软件更新（便携分享版）----------
+    def _manual_update(self):
+        if updater is None:
+            return
+        btn = getattr(self, "update_status", None)
+
+        def progress(s):
+            if btn is not None:
+                self.root.after(0, lambda: btn.config(text=s))
+
+        def worker():
+            try:
+                applied, msg = updater.check_and_apply(progress)
+                self.root.after(0, lambda: (
+                    btn.config(text=msg) if btn is not None else None,
+                    self.autonomy_toast(msg),
+                ))
+            except Exception as e:
+                self.root.after(0, lambda: (
+                    btn.config(text=str(e)[:200]) if btn is not None else None,))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _view_changelog(self):
+        if updater is None:
+            return
+        try:
+            txt = updater.changelog()
+        except Exception:
+            txt = None
+        if not txt:
+            txt = "暂无更新日志。"
+        messagebox.showinfo(f"{CONFIG['name']} · 更新日志", txt, parent=self.root)
 
     def notify(self, msg):
         win = tk.Toplevel(self.root)

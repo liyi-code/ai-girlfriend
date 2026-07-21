@@ -118,6 +118,11 @@ CONFIG = {
     "input_fg": os.getenv("INPUT_FG", "#ffd9e8"),          # 输入框文字颜色
     "input_alpha": float(os.getenv("INPUT_ALPHA", "0.82")),  # 半透明度 0~1
     "input_topmost": _bool(os.getenv("INPUT_TOPMOST", "true")),  # 是否置顶
+
+    # —— 便携分享版「自动更新」——
+    "auto_update_enabled": _bool(os.getenv("AUTO_UPDATE_ENABLED", "true")),  # 启动后后台静默检查并应用更新
+    "update_mirror": os.getenv("UPDATE_MIRROR", "").strip(),                 # 国内被墙时填镜像前缀，如 https://ghproxy.com/
+    "update_branch": os.getenv("UPDATE_BRANCH", "main").strip(),            # 更新来源分支
 }
 
 # --------------------------------------------------------------------------- #

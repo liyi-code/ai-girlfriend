@@ -35,6 +35,10 @@ pw_install2.txt
 *.wav
 repro*.log
 
+# 自动更新基线（由 updater 生成、随发布包分发，不入库）
+.update_manifest.json
+.update_backup/
+
 # 开发/调试脚本（用户运行不需要）
 test_*.py
 debug_mic.py
