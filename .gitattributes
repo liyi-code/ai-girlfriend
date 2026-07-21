@@ -1,0 +1,2 @@
+# 批处理文件必须保持 CRLF，否则 Windows cmd 解析会拆散命令导致闪退
+*.bat -text
