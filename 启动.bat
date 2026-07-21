@@ -8,16 +8,41 @@ echo   首次运行需联网（创建环境 + 安装依赖，约几分钟）
 echo ============================================================
 echo.
 
-:: 0) 选一个可用的 Python（优先 python，回退到 py 启动器）
-set "PY=python"
-python -c "import sys; v=sys.version_info; sys.exit(0 if (3,10)<=v[:2]<=(3,14) else 1)" >nul 2>&1
-if errorlevel 1 (
-    set "PY=py -3.11"
+:: 0) 选一个可用的标准 Python（优先 py 启动器，避开 conda/miniconda）
+set "PY="
+:: 优先 py 启动器（标准 Python 安装时自带，能避开 conda）
+py -3.14 -c "import sys; v=sys.version_info; sys.exit(0 if (3,10)<=v[:2]<=(3,14) else 1)" >nul 2>&1
+if not errorlevel 1 set "PY=py -3.14"
+if not defined PY (
+    py -3 -c "import sys; v=sys.version_info; sys.exit(0 if (3,10)<=v[:2]<=(3,14) else 1)" >nul 2>&1
+    if not errorlevel 1 set "PY=py -3"
+)
+:: 回退到 python，但排除 conda/miniconda（其 venv 机制与标准 Python 不兼容）
+if not defined PY (
+    python -c "import sys; v=sys.version_info; bad=('conda' in sys.executable.lower() or 'miniconda' in sys.executable.lower()); sys.exit(0 if ((not bad) and (3,10)<=v[:2]<=(3,14)) else 1)" >nul 2>&1
+    if not errorlevel 1 set "PY=python"
+)
+if not defined PY (
+    echo 未找到标准 Python 3.10~3.14。请安装标准 Python（推荐 3.11，安装时务必勾选 Add python.exe to PATH）。
+    echo 若已安装仍报错，请检查 PATH 中 miniconda 是否排在标准 Python 之前。
+    pause
+    exit /b 1
 )
 echo 将使用 %PY% 创建/运行环境
 
-:: 1) 没有虚拟环境就创建
-if not exist "venv\Scripts\python.exe" (
+:: 1) 没有虚拟环境，或环境损坏/不完整，就创建或重建
+set "VENV_BROKEN=0"
+if exist "venv\Scripts\python.exe" (
+    venv\Scripts\python.exe -c "import sys" >nul 2>&1
+    if errorlevel 1 set "VENV_BROKEN=1"
+)
+if not exist "venv\Scripts\python.exe" set "VENV_BROKEN=1"
+if "%VENV_BROKEN%"=="1" (
+    if exist "venv" (
+        echo.
+        echo 检测到 venv 损坏或不完整（可能由 conda 创建），正在删除重建...
+        rmdir /s /q "venv"
+    )
     echo.
     echo 首次运行：正在创建虚拟环境 venv ...
     %PY% -m venv venv
