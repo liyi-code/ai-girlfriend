@@ -43,15 +43,22 @@ HTTP_TIMEOUT = 25
 
 # 这些路径永远不在仓库树里（由 .gitignore 保证），这里再兜底拦一道，双保险。
 # 注意：.update_manifest.json 是更新器自己维护的基线文件，绝不参与自更新。
-_PROTECTED_PREFIXES = (".env", "data/", "venv/", "models/", ".update_backup/",
-                       "personal_backup_", ".env.personal_bak_",
-                       ".update_manifest.json")
+# 关键：.env 必须【精确匹配】，不能用 ".env" 当前缀，否则会把 .env.example
+# （配置模板，应该随更新同步）误判成“已删除”而删掉用户的模板文件。
+_PROTECTED_EXACT = (".env", ".update_manifest.json")
+_PROTECTED_PREFIXES = ("data/", "venv/", "models/", ".update_backup/",
+                       "personal_backup_", ".env.personal_bak_")
 
 
 def _is_protected(relpath):
     p = relpath.replace("\\", "/")
+    if p in _PROTECTED_EXACT:
+        return True
+    # .env 作为目录前缀也要拦（例如 .env/secret）；但 .env.example 不算
+    if p.startswith(".env/") or p.endswith("/.env"):
+        return True
     for pre in _PROTECTED_PREFIXES:
-        if p == pre or p.startswith(pre) or ("/" + pre) in p:
+        if p.startswith(pre) or ("/" + pre) in p:
             return True
     return False
 
@@ -66,16 +73,51 @@ def _raw_url(path):
     return (MIRROR + u) if MIRROR else u
 
 
+def _discover_proxy():
+    """决定用哪个代理（优先级：显式配置 > 环境变量 > Windows 系统代理）。
+
+    关键点：很多国内用户用 Clash/V2Ray 并把「系统代理」设成 127.0.0.1:xxxx，
+    但 Python 的 urllib 默认【不读】WinINET 系统代理，必须这里手动探测，
+    否则这类用户会更新失败。"""
+    if PROXY:
+        return PROXY
+    for k in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+        v = os.getenv(k, "").strip()
+        if v:
+            return v
+    if sys.platform.startswith("win"):
+        try:
+            import winreg
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Internet Settings") as key:
+                enabled, _ = winreg.QueryValueEx(key, "ProxyEnable")
+                if enabled:
+                    server, _ = winreg.QueryValueEx(key, "ProxyServer")
+                    if server:
+                        if "=" in server:   # 形如 http=127.0.0.1:1;https=127.0.0.1:2
+                            for part in server.split(";"):
+                                pk, pv = part.split("=", 1)
+                                if pk.strip().lower() in ("https", "http", "proxy"):
+                                    return pv.strip()
+                            return server.split(";")[0].split("=", 1)[-1].strip()
+                        return server.strip()   # 形如 127.0.0.1:10090
+        except Exception:
+            pass
+    return ""
+
+
 def _http_get(url, binary=True, timeout=HTTP_TIMEOUT):
+    proxy = _discover_proxy()
     last_err = None
     for _ in range(2):   # 简单重试一次，抗瞬时抖动
         try:
             req = urllib.request.Request(
                 url, headers={"User-Agent": "ai-girlfriend-updater", "Accept": "*/*"})
             handlers = []
-            if PROXY:
+            if proxy:
                 handlers.append(urllib.request.ProxyHandler(
-                    {"http": PROXY, "https": PROXY}))
+                    {"http": proxy, "https": proxy}))
             opener = urllib.request.build_opener(*handlers)
             with opener.open(req, timeout=timeout) as r:
                 data = r.read()
