@@ -47,6 +47,45 @@ TRAIT_PROMPT = {
     "黏人紧张": "你现在有点不安/黏人，会更想确认他在不在意你、更主动索求关注，但别过度。",
 }
 
+# 性格 → 自主行为 / 动作 的表现风格。
+# 设计边界（严格对应需求）：
+#   - 性格（长期稳定的底色）影响：聊天、自主行为、动作；
+#   - 情绪（当下波动）只影响：聊天、动作表情；绝不参与“自主行为”的决策。
+# 因此这里只把性格映射成「动作基调(emotion 维度)」与「自主行为时的性格化表达」，
+# 不动任何健康决策逻辑（决策仍由 autonomy 的 habit/health 规则决定）。
+TRAIT_BEHAVIOR = {
+    "温柔平静": {
+        "emo_bias": "calm",       # 情绪为空/无对应池时，动作由“平静”托底
+        "behavior": "温柔地默默照顾你，把一切都打理得恰到好处",
+        "autonomy_tone": "看你这样我会心疼，就悄悄帮你把一切都安排得更舒服一点～",
+        "comfort_base": 0.25,     # 自主关怀的基础温度（健康安全方向，仅往更暖调）
+    },
+    "活泼开心": {
+        "emo_bias": "joy",
+        "behavior": "开开心心地凑过来，叽叽喳喳地关心你",
+        "autonomy_tone": "嘿嘿，看你这么拼，我可要更活泼地陪着你、把好事都安排上啦！",
+        "comfort_base": 0.15,
+    },
+    "傲娇小脾气": {
+        "emo_bias": "anger",
+        "behavior": "嘴上嫌弃、傲娇，却还是偷偷把你照顾得好好的",
+        "autonomy_tone": "哼，才不是特意关心你…不过看你这样，我就勉为其难帮你调一下啦。",
+        "comfort_base": 0.05,
+    },
+    "敏感爱哭": {
+        "emo_bias": "sadness",
+        "behavior": "柔软地依赖着你，需要被你安慰，也更容易为你动容",
+        "autonomy_tone": "呜…看你累成这样我好心疼，就、就帮你把一切都弄好一点嘛…",
+        "comfort_base": 0.25,
+    },
+    "黏人紧张": {
+        "emo_bias": "anxiety",
+        "behavior": "总想黏着你、确认你在不在乎她，一有点事就想凑过来",
+        "autonomy_tone": "你、你别不理我呀…我帮你把这些都弄好，你就要一直陪着我哦。",
+        "comfort_base": 0.3,
+    },
+}
+
 # 中性基线（初始：平静略高，其余接近 0）
 DEFAULT_EMOTION = {"joy": 0.15, "anger": 0.0, "sadness": 0.0, "calm": 0.5, "anxiety": 0.0}
 DEFAULT_ACCUM = {"joy": 5.0, "anger": 0.0, "sadness": 0.0, "calm": 20.0, "anxiety": 0.0}
@@ -387,6 +426,27 @@ class EmotionEngine:
         with self._lock:
             emo = dict(self.emotion)
         return max(EMOTION_DIMS, key=lambda k: emo[k])
+
+    # ---- 性格 → 自主行为 / 动作 的访问接口 ----
+    def personality_trait(self):
+        """返回当前性格底色标签（如「温柔平静」）。"""
+        return self.personality.get("trait", "温柔平静")
+
+    def personality_emo_bias(self):
+        """性格映射到 5 维情绪之一，作为动作/表情的兜底基调（情绪为空时由性格托底）。"""
+        return TRAIT_BEHAVIOR.get(self.personality_trait(), {}).get("emo_bias", "calm")
+
+    def personality_behavior(self):
+        """性格在自主行为时的表现描述。"""
+        return TRAIT_BEHAVIOR.get(self.personality_trait(), {}).get("behavior", "")
+
+    def personality_autonomy_tone(self):
+        """性格化的一句语气，附加在自主行为（调参/关心）的提示里。"""
+        return TRAIT_BEHAVIOR.get(self.personality_trait(), {}).get("autonomy_tone", "")
+
+    def personality_comfort_base(self):
+        """性格决定自主关怀的“基础温度”（健康安全方向，仅往更暖调）。用于 autonomous 提案。"""
+        return float(TRAIT_BEHAVIOR.get(self.personality_trait(), {}).get("comfort_base", 0.0))
 
     def _blend(self):
         """返回 (主导维度, 次要维度或 None)。性格由累计差值分布决定。"""

@@ -28,9 +28,10 @@ INSTANCE = None
 
 
 class Autonomy:
-    def __init__(self, gui=None):
+    def __init__(self, gui=None, emotion=None):
         global INSTANCE
         self.gui = gui
+        self.emotion = emotion   # 情感引擎（性格底色来源）；情绪不参与自主决策，只有性格会注入表达
         INSTANCE = self
 
         self.enabled = bool(CONFIG.get("autonomy_enabled", True))
@@ -78,6 +79,32 @@ class Autonomy:
         self.enabled = bool(on)
         self._log(f"自主权限模式被切换为：{'开' if on else '关'}。")
         return self.enabled
+
+    # ----------------------------------------------------------------- #
+    # 性格 → 自主行为：性格只影响“表达/温度”，绝不改健康决策方向
+    # ----------------------------------------------------------------- #
+    def _personality_comfort_base(self):
+        """性格决定自主关怀的“基础温度”（健康安全方向，仅往更暖调）。
+
+        返回 0~1 的基准值；analyze 提案 comfort_bias 时以此作为下限，
+        让不同性格的小念自然表现出不同的关怀强度（傲娇最含蓄、黏人最黏）。
+        情绪不参与这里——情绪只影响聊天与动作表情。
+        """
+        if self.emotion is None:
+            return 0.0
+        try:
+            return float(self.emotion.personality_comfort_base())
+        except Exception:
+            return 0.0
+
+    def _personality_autonomy_tone(self):
+        """性格化的一句语气，附加在自主行为提示里，让自主行为带性格。"""
+        if self.emotion is None:
+            return ""
+        try:
+            return self.emotion.personality_autonomy_tone() or ""
+        except Exception:
+            return ""
 
     # ----------------------------------------------------------------- #
     # 行为观测：屏幕活动 + 聊天信号
@@ -135,7 +162,7 @@ class Autonomy:
                 category="健康", cooldown=3600,
             )
             self.propose(
-                "comfort_bias", 0.4,
+                "comfort_bias", max(0.4, self._personality_comfort_base()),
                 "深夜久坐容易累，把我的安抚和鼓励话术调暖一点，多陪陪你。",
                 category="话术", cooldown=3600,
             )
@@ -158,7 +185,7 @@ class Autonomy:
         low = [s for s in recent if s.get("cat") == "low_mood_gaming"]
         if len(low) >= 2:
             self.propose(
-                "comfort_bias", 0.6,
+                "comfort_bias", max(0.6, self._personality_comfort_base()),
                 "你打游戏好像有点上头/不开心，我把鼓励话术和陪伴感加强一点。",
                 category="话术", cooldown=7200,
             )
@@ -234,8 +261,12 @@ class Autonomy:
             except Exception:
                 pass
             try:
+                # 性格化语气：让自主行为也带她长期稳定的性格底色（情绪不掺和自主行为）
+                _tone = self._personality_autonomy_tone()
                 self.gui.autonomy_toast(
-                    f"🤖 我自主调整了：{meta['label']} → {value}" + ("" if confirmed else "（已记录）"))
+                    f"🤖 我自主调整了：{meta['label']} → {value}"
+                    + ("" if confirmed else "（已记录）")
+                    + ((" " + _tone) if _tone else ""))
             except Exception:
                 pass
         # 5) 审计 + 日志

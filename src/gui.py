@@ -138,6 +138,11 @@ class App:
         except Exception as e:
             self.append("系统", f"情感系统未启动：{e}")
 
+        # 把情感引擎交给自主权限引擎：让小念的「性格」也能影响她的自主行为表达
+        # （情绪不参与自主决策；只有性格会为自主行为注入性格化的语气/温度）。
+        if self.autonomy is not None:
+            self.autonomy.emotion = self.emotion
+
         # 语音：输入(ASR) / 输出(TTS)，配置驱动、可降级
         self.voice = VoiceInput(
             enabled=CONFIG.get("voice_input_enabled", False),
@@ -1082,14 +1087,19 @@ class App:
         name = CONFIG["name"]
         # on_play：音频开始播放时，气泡+说话动作+进入实时口型模式（与声音起点对齐）
         def on_play():
-            # 取当前主导情绪，传给前端让动作/表情也随心情变化（动作自适应情绪）
+            # 取当前主导情绪 + 性格底色，传给前端让动作/表情随心情与性格变化
             dom = None
+            ptrait = None
             if emo is not None:
                 try:
                     dom = emo.dominant()
                 except Exception:
                     dom = None
-            self.live2d_say(text, name, start_talk=True, emotion=dom)
+                try:
+                    ptrait = emo.personality_trait()
+                except Exception:
+                    ptrait = None
+            self.live2d_say(text, name, start_talk=True, emotion=dom, personality=ptrait)
         # on_level：播放期间每帧把当前音频能量传过去，驱动嘴型实时张合（长句也同步）
         def on_level(rms):
             self._send_mouth(rms)
@@ -1324,25 +1334,38 @@ class App:
                     pass
         self.root.destroy()
 
-    def live2d_say(self, text, name=None, start_talk=False, emotion=None):
+    def live2d_say(self, text, name=None, start_talk=False, emotion=None, personality=None):
         """向形象窗口发送「气泡 + 说话动作」。
 
         start_talk=True 时额外带 talk_start 标记，让前端进入实时口型模式
         （锁定当前气泡为说话气泡、口型改由 setMouth 按音频能量驱动），长句也同步。
         emotion: 可选，当前主导情绪维度名(joy/anger/sadness/calm/anxiety)，
         用于让前端按心情选对应动作/表情（动作自适应情绪）。
+        personality: 可选，小念的性格底色（如「温柔平静」），让动作/表情也带上
+        她长期稳定的性格基调——情绪为空时由性格托底，保证动作有性格。
         """
         if not CONFIG.get("live2d_enabled"):
             return
         name = name or CONFIG["name"]
+        # 未显式传性格时，自动取当前性格底色（情绪为空也能由性格托底）
+        if personality is None and getattr(self, "emotion", None) is not None:
+            try:
+                personality = self.emotion.personality_trait()
+            except Exception:
+                personality = None
         try:
             with socket.create_connection(("127.0.0.1", CONFIG["live2d_port"]), timeout=1) as s:
                 # 单条消息同时携带气泡文本与“说话”动作标记；接收端一次 recv 后统一处理，
                 # 避免两条 sendall 在同一连接上被 TCP 粘包导致 json 解析失败（气泡/动作全丢）。
-                # args 传对象：emotion 主导情绪（驱动前端按情绪选动作/表情），kind 标记说话意图。
+                # args 传对象：emotion 主导情绪 + personality 性格底色，
+                # 前端据此融合「情绪 + 性格」来选择动作/表情（性格影响动作，情绪影响动作表情）。
                 payload = {
                     "text": text, "name": name, "motion": True,
-                    "args": {"emotion": emotion or "calm", "kind": "speaking"},
+                    "args": {
+                        "emotion": emotion or "calm",
+                        "personality": personality or "温柔平静",
+                        "kind": "speaking",
+                    },
                 }
                 if start_talk:
                     payload["talk_start"] = True

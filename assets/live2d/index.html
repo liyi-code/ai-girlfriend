@@ -759,6 +759,13 @@ html, body {
       //  - 锁释放（actingBusy=false）用独立的、略长于动作的定时器兜底，绝不依赖 finish
       //    事件——即使某动作不触发 motion-finish，锁也必释放，后续说话仍能插播动作。
       let actingBusy = false;
+      // 性格 → 情绪 的兜底映射：当一句话没有明确的情绪（多为平静日常）时，
+      // 用她长期稳定的「性格底色」来托底动作/表情，让动作也带性格。
+      // 情绪只决定“当下表情/动作”，性格决定“基调/大动作偏好”——二者共同影响动作。
+      const TRAIT_EMO = {
+        "温柔平静": "calm", "活泼开心": "joy", "傲娇小脾气": "anger",
+        "敏感爱哭": "sadness", "黏人紧张": "anxiety"
+      };
       window.playMotion = function (args) {
         // 1) 口型：说话时嘴巴张合约 2.6s
         talkUntil = performance.now() + 2600;
@@ -766,13 +773,22 @@ html, body {
         // 解析情绪（来自 Python 端性格情感权重系统；旧格式 args 为字符串/数组则忽略）
         let emo = null;
         if (args && typeof args === "object" && args.emotion) emo = args.emotion;
-        // 2) 反馈表情：优先对应情绪池，否则从全部可选表情随机（更生动）
-        const exprPool = (emo && emoExprPool[emo] && emoExprPool[emo].length) ? emoExprPool[emo] : selectableExpr;
+        // 解析性格底色（影响动作/表情的“基调”；情绪为空时由性格托底）
+        let pemo = null;
+        if (args && typeof args === "object" && args.personality) pemo = TRAIT_EMO[args.personality] || null;
+        // 2) 反馈表情：情绪池 + 性格池 融合（二者共同决定动作表情；都没有才通用池）
+        let exprPools = [];
+        if (emo && emoExprPool[emo] && emoExprPool[emo].length) exprPools.push(emoExprPool[emo]);
+        if (pemo && pemo !== emo && emoExprPool[pemo] && emoExprPool[pemo].length) exprPools.push(emoExprPool[pemo]);
+        let exprPool = exprPools.length ? exprPools.reduce((a, b) => a.concat(b), []) : selectableExpr;
         if (exprPool.length) {
           try { model.expression(exprPool[Math.floor(Math.random() * exprPool.length)]); } catch (e) {}
         }
-        // 3) 肢体动作：优先对应情绪池，否则通用插播池；仅在空闲时做一次
-        const motionPool = (emo && emoMotionPool[emo] && emoMotionPool[emo].length) ? emoMotionPool[emo] : actMotions;
+        // 3) 肢体动作：情绪池 + 性格池 融合（二者共同决定动作；都没有才通用插播池）
+        let motionPools = [];
+        if (emo && emoMotionPool[emo] && emoMotionPool[emo].length) motionPools.push(emoMotionPool[emo]);
+        if (pemo && pemo !== emo && emoMotionPool[pemo] && emoMotionPool[pemo].length) motionPools.push(emoMotionPool[pemo]);
+        let motionPool = motionPools.length ? motionPools.reduce((a, b) => a.concat(b), []) : actMotions;
         if (!actingBusy && motionPool.length && Math.random() < 0.6) {
           actingBusy = true;
           clearIdleTimer();   // 取消待机兜底定时器，避免它在插播途中重启 idle 而打断动作（抽动根源）
@@ -793,9 +809,16 @@ html, body {
             setTimeout(() => { actingBusy = false; }, Math.max(2000, total));
           } catch (e) { actingBusy = false; }
         }
-        // 4) 偶尔来个“大动作”：跳或转身（纯代码模拟，不依赖模型动作文件）
-        if (!jumping && !turning && Math.random() < 0.22) {
-          if (Math.random() < 0.5) window.playJump(); else window.playTurn(-1);
+        // 4) 偶尔来个“大动作”：跳或转身（纯代码模拟，不依赖模型动作文件）。
+        //    性格影响这种“大动作”的偏好：活泼更爱蹦，黏人/傲娇更含蓄。情绪不干预这里。
+        let bigChance = 0.22;
+        const trait = (args && args.personality) || "";
+        if (trait === "活泼开心") bigChance = 0.34;
+        else if (trait === "黏人紧张") bigChance = 0.12;
+        else if (trait === "傲娇小脾气") bigChance = 0.16;
+        if (!jumping && !turning && Math.random() < bigChance) {
+          if (trait === "傲娇小脾气" && Math.random() < 0.5) window.playTurn(-1);
+          else if (Math.random() < 0.5) window.playJump(); else window.playTurn(-1);
         }
       };
 
