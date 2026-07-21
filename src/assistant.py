@@ -239,9 +239,6 @@ class Assistant:
         # —— 习惯信号采集：把聊天里暴露的健康/习惯线索喂给自主引擎 ——
         self._maybe_record_signals(user_text)
 
-        # —— 情绪感知：用户话语 → 小念的情绪波动（规则 / 可选 LLM）——
-        self._perceive_emotion(user_text)
-
         # —— 确定性路由：明确动作直接执行，保证“说打开就打开、说搜就真搜” ——
         routed = _route_action(user_text)
         if routed:
@@ -262,17 +259,21 @@ class Assistant:
             if on_tool:
                 on_tool(tool_name, args, result)
             reply = self._reply_for_action(user_text, tool_name, result, ok)
-            mem.add_message("assistant", reply)
-            return reply
+        else:
+            # —— 普通对话：交给 LLM + 工具（search_files / remember / status 等）——
+            messages = [{"role": "system", "content": self.system_prompt(mem)}]
+            for m in mem.recent_history(20):
+                messages.append({"role": m["role"], "content": m["content"]})
+            messages.append({"role": "user", "content": user_text})
+            reply = self._run_with_tools(messages, on_tool, mem)
 
-        # —— 普通对话：交给 LLM + 工具（search_files / remember / status 等）——
-        messages = [{"role": "system", "content": self.system_prompt(mem)}]
-        for m in mem.recent_history(20):
-            messages.append({"role": m["role"], "content": m["content"]})
-        messages.append({"role": "user", "content": user_text})
-
-        reply = self._run_with_tools(messages, on_tool, mem)
         mem.add_message("assistant", reply)
+
+        # —— 情绪感知：小念【自己说的话】里流露的情绪关键词 → 她自己的情绪波动 ——
+        # 设计原则：玩家的输入只是“诱导”她说什么，不能直接决定她的情绪；
+        # 情绪由她自己的表达决定（她说开心的话→开心涨，她说傲娇的话→小脾气涨）。
+        self._perceive_emotion(reply, source="self")
+
         return reply
 
     def _reply_for_action(self, user_text, tool_name, result, ok):
@@ -605,13 +606,17 @@ class Assistant:
         self.emotion.perceive(text=text, event=event, source=source, delta=delta)
 
     def llm_perceive(self, text):
-        """用 LLM 轻量判断用户话语触发小念的情绪增量（JSON）。失败返回 None。"""
+        """用 LLM 轻量判断【小念自己说的话】流露出的情绪增量（JSON）。失败返回 None。
+
+        注意：text 传入的是小念的回复，不是玩家的话——情绪由她自己的表达决定。
+        """
         if self.client is None:
             return None
         import json as _json
         import re as _re
         sys_p = (
-            "你是情绪分析器。根据用户的话，判断它会让小念产生哪些情绪，"
+            "你是情绪分析器。下面这段话是 AI 女友【小念自己说出来的话】。"
+            "请判断她这句话里流露出了哪些情绪，"
             "返回 JSON：{\"joy\":0~1, \"anger\":0~1, \"sadness\":0~1, \"calm\":0~1, \"anxiety\":0~1}，"
             "数值是该情绪的增量强度（可正可负，0 表示无影响）。只返回 JSON，不要其它文字。"
         )
