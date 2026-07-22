@@ -1,5 +1,7 @@
 # AI 女友 · 小念
 
+> 架构图与模块关系见 [ARCHITECTURE.md](./ARCHITECTURE.md)
+
 一个会**主动关心你、记住你、还能帮你操作电脑**的 AI 女友桌面程序（Windows）。
 
 ## 功能
